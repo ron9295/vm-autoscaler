@@ -17,6 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field
 ResourceName = Literal["storage"]
 RESOURCE_NAMES: tuple[ResourceName, ...] = ("storage",)
 
+# Annotation key prefix for "last scaled" times: vm-autoscaler/last-scaled-<resource>.
+COOLDOWN_ANNOTATION_PREFIX = "vm-autoscaler/last-scaled-"
+
 
 class Mode(StrEnum):
     """How a computed change is delivered. Ordered from safest to most automatic."""
@@ -72,6 +75,15 @@ class SkipReason(StrEnum):
     GITOPS_ERROR = "gitops_error"
     DUPLICATE_IN_BATCH = "duplicate_in_batch"
     INTERNAL_ERROR = "internal_error"  # unexpected bug; logged with a traceback
+
+
+class OutcomeReason(StrEnum):
+    """Why a scale request that led to a change (or a planned change) ended as it did."""
+
+    SCALED = "scaled"
+    ARGOCD_SYNC_FAILED = "argocd_sync_failed"  # committed, but Argo CD did not sync
+    DRY_RUN = "dry_run"
+    CHANGE_REQUEST_OPENED = "change_request_opened"
 
 
 class TargetKey(BaseModel):
@@ -200,7 +212,7 @@ class ScaleDecision(BaseModel):
     resource: str
     value: float | None
     decision: Decision
-    reason: str
+    reason: SkipReason | OutcomeReason
     mode: Mode | None = None
     old: str | None = None
     new: str | None = None

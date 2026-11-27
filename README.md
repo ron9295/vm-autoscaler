@@ -166,13 +166,15 @@ repo directories and the Grafana labels), and make sure the GitLab token may pus
 |----------|---------|-------|
 | `WEBHOOK_TOKEN` | – (required) | Shared with the Grafana contact point. Secret. At least 16 characters (the service refuses to start otherwise); use `openssl rand -hex 32`. |
 | `CONFIG_PATH` | `/etc/vm-autoscaler/config.yaml` | |
-| `GITOPS_BACKEND` | `internal` | `gitlab` (set in the OpenShift ConfigMap), `internal`, or `fake` (in-memory, local only) |
+| `GITOPS_BACKEND` | – (required) | `gitlab` (set in the OpenShift ConfigMap), `internal`, or `fake` (in-memory, local only). The service refuses to start without it. |
 | `GITLAB_URL` | – | Required when `gitlab`, e.g. `https://gitlab.internal.example` |
 | `GITLAB_TOKEN` | – | Required when `gitlab`. Sent as `PRIVATE-TOKEN`. Secret. |
 | `GITOPS_API_URL` | – | Required when `internal` |
 | `GITOPS_API_TOKEN` | – | `internal` only. Sent as `Authorization: Bearer …`. Secret. |
-| `GITOPS_API_TIMEOUT_SECONDS` | `10` | Per request (internal backend and GitLab) |
-| `GITOPS_API_MAX_RETRIES` | `3` | Reads only (internal backend and GitLab) |
+| `GITLAB_TIMEOUT_SECONDS` | `GITOPS_API_TIMEOUT_SECONDS` | GitLab, per request. Unset: uses the `GITOPS_API_TIMEOUT_SECONDS` value |
+| `GITLAB_MAX_RETRIES` | `GITOPS_API_MAX_RETRIES` | GitLab, reads only. Unset: uses the `GITOPS_API_MAX_RETRIES` value |
+| `GITOPS_API_TIMEOUT_SECONDS` | `10` | Per request, internal backend (also the GitLab fallback, so old configs keep working) |
+| `GITOPS_API_MAX_RETRIES` | `3` | Reads only, internal backend (also the GitLab fallback) |
 | `GITOPS_STORES_ANNOTATIONS` | `true` | `internal` only: `false` → cooldowns in memory only (reset on restart; WARNING at startup) |
 | `GITOPS_FAKE_SEED_PATH` | – | YAML seed for the fake backend |
 | `ARGOCD_URL` | – | Required for `api`/`cli` |
@@ -181,8 +183,8 @@ repo directories and the Grafana labels), and make sure the GitLab token may pus
 | `ARGOCD_INSECURE_SKIP_VERIFY` | `false` | Avoid; use `CA_BUNDLE_PATH` |
 | `ARGOCD_CLI_PATH` | `argocd` | For `cli` |
 | `CA_BUNDLE_PATH` | – | Internal CA bundle for GitLab, the backend and Argo |
-| `HTTP_TIMEOUT_SECONDS` | `10` | Argo CD calls |
-| `READINESS_CHECK_DEPENDENCIES` | `false` | `/readyz` also checks the backend/Argo URLs (2s timeout, cached 60s) |
+| `ARGOCD_TIMEOUT_SECONDS` | `10` | Argo CD calls. The old name `HTTP_TIMEOUT_SECONDS` still works |
+| `READINESS_CHECK_DEPENDENCIES` | `false` | `/readyz` also checks the backend/Argo URLs and, in GitLab mode, that every project is readable (2s timeout, cached 60s). Off by default so a GitLab blip does not make the only pod unready |
 | `LOG_LEVEL` | `INFO` | |
 
 ---
@@ -225,7 +227,9 @@ are the same as for the internal backend.
   * A message that wrongly matches (e.g. a human `Revert "[vm-autoscaler] …"`) can only
     start a cooldown early, never cause an extra change.
   * **The commit title format is load-bearing.** If you change `change_reason_prefix`,
-    older commits stop matching and cooldowns expire early once.
+    older commits stop matching and cooldowns expire early once. It is the only prefix
+    setting; the old `gitlab.commit_message_prefix` still works (with a deprecation
+    warning) but a different value in both places is a startup error.
   * Check once in `dry_run` against your GitLab that a merged MR is seen (it should show
     `cooldown_active`). The GitLab docs don't spell out how `path` and `first_parent`
     combine for merge commits.
@@ -306,13 +310,13 @@ Rollouts, node drains and evictions all stop the pod with SIGTERM:
 3. **`terminationGracePeriodSeconds: 90`** — SIGKILL only after that.
 
 Worst case, one webhook can take a few minutes: every GitLab GET (file, commit history,
-re-read) is retried up to `GITOPS_API_MAX_RETRIES` times with a
-`GITOPS_API_TIMEOUT_SECONDS` timeout, plus the Argo status, refresh and sync calls. That
+re-read) is retried up to `GITLAB_MAX_RETRIES` times with a
+`GITLAB_TIMEOUT_SECONDS` timeout, plus the Argo status, refresh and sync calls. That
 only happens when GitLab or Argo is timing out. There is deliberately no hard time limit
 per webhook: cancelling in the middle of a GitLab write would leave it unknown whether the
 commit landed. The per-target lock, the re-read before writing, and the cooldown from Git
 history keep this safe; at worst Grafana sees a timeout and re-sends. To shorten it,
-lower `GITOPS_API_TIMEOUT_SECONDS` (e.g. 5) and `GITOPS_API_MAX_RETRIES` (e.g. 2).
+lower `GITLAB_TIMEOUT_SECONDS` (e.g. 5) and `GITLAB_MAX_RETRIES` (e.g. 2).
 
 A webhook that is still running after 80s is cancelled and Grafana gets an error, so it
 re-sends the alert. Because state lives in Git (commit history), nothing is lost and
@@ -338,7 +342,7 @@ decisions. This is the simpler correct choice:
   the handler returns `503` with the same JSON body, so Grafana re-sends the alert
   promptly. Every other outcome, including other skips, is `202`.
 
-All calls have timeouts. Keep `GITOPS_API_TIMEOUT_SECONDS × (retries + 1)` plus Argo
+All calls have timeouts. Keep `GITLAB_TIMEOUT_SECONDS × (retries + 1)` plus Argo
 timeouts below the webhook timeout of your Grafana version.
 
 ---
@@ -421,8 +425,9 @@ oc -n vm-autoscaler exec deployment/vm-autoscaler -- \
   python -c "import urllib.request as u; print(u.urlopen('http://localhost:8080/readyz').read().decode())"
 ```
 
-`/readyz` must show `"gitlab_project:<project>": true`; `false` means the token or project
-path is wrong. Start with `mode: dry_run` and watch the decisions in the logs before moving
+`/readyz` only shows `"gitlab_project:<project>": true` when `READINESS_CHECK_DEPENDENCIES=true`;
+`false` means the token or project path is wrong (use it for the first rollout check, then
+leave it off so a GitLab blip does not make the only pod unready). Start with `mode: dry_run` and watch the decisions in the logs before moving
 on (see "Rollout plan").
 
 Config changes: edit the ConfigMap in `deploy/openshift/configmap.yaml`, run plan and apply

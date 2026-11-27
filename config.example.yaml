@@ -29,7 +29,6 @@ gitlab:
   storage_path: vmstorage.pvc.size
   author_name: vm-autoscaler
   author_email: vm-autoscaler@example.local
-  commit_message_prefix: "[vm-autoscaler]"       # if set, replaces change_reason_prefix
   cooldown_source: commits    # commits: last-scaled time from Git history (default)
                               # annotations: written into the values file at annotations_path
 

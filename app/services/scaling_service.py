@@ -28,10 +28,12 @@ from app.domain.errors import (
     GitOpsUnavailableError,
 )
 from app.domain.models import (
+    COOLDOWN_ANNOTATION_PREFIX,
     ChangeResult,
     ComponentState,
     Decision,
     Mode,
+    OutcomeReason,
     ParsedWebhook,
     Policy,
     ResourceChange,
@@ -47,9 +49,6 @@ from app.domain.strategies import ComputeResult, ScalingStrategy, build_strategy
 from app.observability import Metrics
 
 logger = logging.getLogger(__name__)
-
-COOLDOWN_ANNOTATION_PREFIX = "vm-autoscaler/last-scaled-"
-ARGOCD_SYNC_FAILED = "argocd_sync_failed"
 
 Clock = Callable[[], datetime]
 
@@ -271,7 +270,9 @@ class ScalingService:
         merge_request = [p for p in plan.changes if p.candidate.mode is Mode.MERGE_REQUEST]
         direct = [p for p in plan.changes if p.candidate.mode is Mode.DIRECT_COMMIT]
 
-        decisions.extend(planned_decision(p, Decision.DRY_RUN, "dry_run") for p in dry_run)
+        decisions.extend(
+            planned_decision(p, Decision.DRY_RUN, OutcomeReason.DRY_RUN) for p in dry_run
+        )
         if merge_request:
             decisions.extend(await self._open_change_request(target, merge_request))
         if direct:
@@ -348,7 +349,9 @@ class ScalingService:
         # Remember it, so Grafana's repeat notifications don't open a new MR every hour.
         self._remember_scaled(target, planned)
         return [
-            planned_decision(p, Decision.CHANGE_REQUEST_OPENED, "change_request_opened", result)
+            planned_decision(
+                p, Decision.CHANGE_REQUEST_OPENED, OutcomeReason.CHANGE_REQUEST_OPENED, result
+            )
             for p in planned
         ]
 
@@ -404,7 +407,7 @@ class ScalingService:
 
         self._remember_scaled(target, planned)
         synced = await self._sync(target)
-        outcome = "scaled" if synced else ARGOCD_SYNC_FAILED
+        outcome = OutcomeReason.SCALED if synced else OutcomeReason.ARGOCD_SYNC_FAILED
         decisions.extend(
             planned_decision(p, Decision.APPLIED, outcome, result, synced=synced) for p in planned
         )
@@ -480,7 +483,7 @@ class ScalingService:
             ocp_cluster=decision.ocp_cluster,
             resource=decision.resource,
             decision=decision.decision.value,
-            reason=decision.reason,
+            reason=decision.reason.value,
         ).inc()
         level = logging.WARNING if decision.reason in _WARNING_REASONS else logging.INFO
         logger.log(
@@ -508,18 +511,18 @@ class ScalingService:
         )
 
 
-_WARNING_REASONS = {
-    SkipReason.AT_MAX_CAP.value,  # a human must act (e.g. add nodes)
-    SkipReason.UNKNOWN_TARGET.value,
-    SkipReason.GITOPS_CONFLICT.value,
-    SkipReason.GITOPS_UNAVAILABLE.value,
-    SkipReason.GITOPS_REJECTED.value,
-    SkipReason.GITOPS_ERROR.value,
-    SkipReason.GITOPS_TARGET_NOT_FOUND.value,
-    SkipReason.ARGOCD_UNAVAILABLE.value,
-    SkipReason.DEPLOYMENT_NOT_HEALTHY.value,
-    SkipReason.INTERNAL_ERROR.value,
-    ARGOCD_SYNC_FAILED,
+_WARNING_REASONS: set[SkipReason | OutcomeReason] = {
+    SkipReason.AT_MAX_CAP,  # a human must act (e.g. add nodes)
+    SkipReason.UNKNOWN_TARGET,
+    SkipReason.GITOPS_CONFLICT,
+    SkipReason.GITOPS_UNAVAILABLE,
+    SkipReason.GITOPS_REJECTED,
+    SkipReason.GITOPS_ERROR,
+    SkipReason.GITOPS_TARGET_NOT_FOUND,
+    SkipReason.ARGOCD_UNAVAILABLE,
+    SkipReason.DEPLOYMENT_NOT_HEALTHY,
+    SkipReason.INTERNAL_ERROR,
+    OutcomeReason.ARGOCD_SYNC_FAILED,
 }
 
 
@@ -576,7 +579,7 @@ def skipped(
                 "fields": {"fingerprint": request.fingerprint, "reason": reason, "detail": detail}
             },
         )
-    return _base_decision(request, Decision.SKIPPED, reason.value, mode)
+    return _base_decision(request, Decision.SKIPPED, reason, mode)
 
 
 def skip_all(
@@ -589,7 +592,7 @@ def skip_all(
 def planned_decision(
     planned: PlannedChange,
     decision: Decision,
-    reason: str,
+    reason: OutcomeReason,
     result: ChangeResult | None = None,
     *,
     synced: bool = False,
@@ -609,7 +612,7 @@ def planned_decision(
 
 
 def _base_decision(
-    request: ScaleRequest, decision: Decision, reason: str, mode: Mode | None
+    request: ScaleRequest, decision: Decision, reason: SkipReason | OutcomeReason, mode: Mode | None
 ) -> ScaleDecision:
     key = request.target_key
     return ScaleDecision(

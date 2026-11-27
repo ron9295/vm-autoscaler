@@ -248,3 +248,61 @@ def test_other_skips_stay_202(tmp_path: Path, gitops: FakeGitOpsBackend) -> None
     response = _post_with(tmp_path, gitops, syncer)
     assert response.status_code == 202
     assert [d["reason"] for d in response.json()["decisions"]] == ["deployment_not_healthy"]
+
+
+def _env_settings(monkeypatch: pytest.MonkeyPatch, **env: str) -> Settings:
+    for name in (
+        "GITOPS_BACKEND",
+        "GITOPS_API_TIMEOUT_SECONDS",
+        "GITOPS_API_MAX_RETRIES",
+        "GITLAB_TIMEOUT_SECONDS",
+        "GITLAB_MAX_RETRIES",
+        "ARGOCD_TIMEOUT_SECONDS",
+        "HTTP_TIMEOUT_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("WEBHOOK_TOKEN", TOKEN)
+    monkeypatch.setenv("ARGOCD_SYNC_METHOD", "fake")
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    return Settings()
+
+
+def test_gitops_backend_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    with pytest.raises(ValueError, match=r"GITOPS_BACKEND is required.*gitlab \| internal \| fake"):
+        _env_settings(monkeypatch)
+    with pytest.raises(ValueError, match="GITOPS_BACKEND"):
+        _env_settings(monkeypatch, GITOPS_BACKEND="")
+    assert _env_settings(monkeypatch, GITOPS_BACKEND="fake").gitops_backend == "fake"
+
+
+def test_gitlab_timeout_and_retries_fall_back_to_old_names(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _env_settings(
+        monkeypatch,
+        GITOPS_BACKEND="fake",
+        GITOPS_API_TIMEOUT_SECONDS="7",
+        GITOPS_API_MAX_RETRIES="2",
+    )
+    assert (settings.gitlab_timeout, settings.gitlab_retries) == (7.0, 2)
+    settings = _env_settings(
+        monkeypatch,
+        GITOPS_BACKEND="fake",
+        GITOPS_API_TIMEOUT_SECONDS="7",
+        GITOPS_API_MAX_RETRIES="2",
+        GITLAB_TIMEOUT_SECONDS="4",
+        GITLAB_MAX_RETRIES="0",
+    )
+    assert (settings.gitlab_timeout, settings.gitlab_retries) == (4.0, 0)
+    assert settings.gitops_api_timeout_seconds == 7.0  # the internal backend keeps its own
+
+
+def test_argocd_timeout_accepts_the_old_name(monkeypatch: pytest.MonkeyPatch) -> None:
+    assert _env_settings(monkeypatch, GITOPS_BACKEND="fake").argocd_timeout_seconds == 10.0
+    old = _env_settings(monkeypatch, GITOPS_BACKEND="fake", HTTP_TIMEOUT_SECONDS="3")
+    assert old.argocd_timeout_seconds == 3.0
+    new = _env_settings(
+        monkeypatch, GITOPS_BACKEND="fake", HTTP_TIMEOUT_SECONDS="3", ARGOCD_TIMEOUT_SECONDS="5"
+    )
+    assert new.argocd_timeout_seconds == 5.0

@@ -58,8 +58,8 @@ def build_gitops_backend(settings: Settings, config: AppConfig, metrics: Metrics
         return GitLabGitOpsBackend(
             gitlab_url=settings.gitlab_url,
             token=_secret(settings.gitlab_token) or "",
-            timeout=settings.gitops_api_timeout_seconds,
-            max_retries=settings.gitops_api_max_retries,
+            timeout=settings.gitlab_timeout,
+            max_retries=settings.gitlab_retries,
             verify=build_verify(settings.ca_bundle_path),
             metrics=metrics,
             targets=config.gitlab_targets(),
@@ -89,7 +89,7 @@ def build_syncer(settings: Settings) -> DeploymentSyncer:
         return ArgoCdCliSyncer(
             settings.argocd_url,
             token,
-            settings.http_timeout_seconds,
+            settings.argocd_timeout_seconds,
             insecure=settings.argocd_insecure_skip_verify,
             cli_path=settings.argocd_cli_path,
             ca_bundle_path=settings.ca_bundle_path,
@@ -97,7 +97,7 @@ def build_syncer(settings: Settings) -> DeploymentSyncer:
     return ArgoCdApiSyncer(
         settings.argocd_url,
         token,
-        settings.http_timeout_seconds,
+        settings.argocd_timeout_seconds,
         build_verify(settings.ca_bundle_path, settings.argocd_insecure_skip_verify),
     )
 
@@ -105,15 +105,16 @@ def build_syncer(settings: Settings) -> DeploymentSyncer:
 def build_readiness(settings: Settings, gitops: GitOpsBackend) -> ReadinessChecker:
     """Readiness checker.
 
-    GitLab mode always checks that every configured project is readable (token valid).
-    URL reachability checks only run when READINESS_CHECK_DEPENDENCIES=true.
+    Dependency checks only run when READINESS_CHECK_DEPENDENCIES=true: URL reachability and,
+    in GitLab mode, that every configured project is readable (token valid). They are off by
+    default so a GitLab blip does not make the only pod unready and drop Grafana webhooks.
     """
+    if not settings.readiness_check_dependencies:
+        return ReadinessChecker()
     probes: dict[str, Callable[[], Awaitable[bool]]] = {}
     if isinstance(gitops, GitLabGitOpsBackend):
         for project in gitops.projects():
             probes[f"gitlab_project:{project}"] = partial(gitops.check_project, project)
-    if not settings.readiness_check_dependencies:
-        return ReadinessChecker(probes=probes)
     urls: dict[str, str] = {}
     if settings.gitops_backend == "internal" and settings.gitops_api_url:
         urls["gitops_api"] = settings.gitops_api_url

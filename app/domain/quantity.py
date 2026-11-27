@@ -9,7 +9,8 @@ from __future__ import annotations
 import re
 from decimal import ROUND_CEILING, Decimal, InvalidOperation
 
-_BINARY_SUFFIXES: dict[str, int] = {
+# Ordered from smallest to largest unit.
+BINARY_SUFFIXES: dict[str, int] = {
     "Ki": 1024,
     "Mi": 1024**2,
     "Gi": 1024**3,
@@ -49,8 +50,8 @@ def parse_bytes(text: str) -> int:
     number, suffix = _split(text)
     if suffix == "":
         multiplier = 1
-    elif suffix in _BINARY_SUFFIXES:
-        multiplier = _BINARY_SUFFIXES[suffix]
+    elif suffix in BINARY_SUFFIXES:
+        multiplier = BINARY_SUFFIXES[suffix]
     elif suffix in _DECIMAL_SUFFIXES:
         multiplier = _DECIMAL_SUFFIXES[suffix]
     else:
@@ -61,7 +62,7 @@ def parse_bytes(text: str) -> int:
 def format_bytes(value: int) -> str:
     """Format bytes with the largest binary suffix that divides exactly ("2Ti", "20Gi")."""
     for suffix in ("Ei", "Pi", "Ti", "Gi", "Mi", "Ki"):
-        multiplier = _BINARY_SUFFIXES[suffix]
+        multiplier = BINARY_SUFFIXES[suffix]
         if value >= multiplier and value % multiplier == 0:
             return f"{value // multiplier}{suffix}"
     return str(value)

@@ -17,7 +17,8 @@ from app.adapters.gitops_gitlab import (
     target_branch_prefix,
 )
 from app.adapters.yaml_edit import changed_lines
-from app.config import GitLabConfig, GitLabLocation
+from app.config import GitLabConfig, GitLabLocation, Settings
+from app.container import build_readiness
 from app.domain.errors import (
     GitOpsConflictError,
     GitOpsManifestError,
@@ -417,6 +418,24 @@ async def test_readiness_project_check(backend: GitLabGitOpsBackend) -> None:
     assert backend.projects() == ["infra/vm-values"]
     assert await backend.check_project("infra/vm-values") is True
     assert await backend.check_project("infra/vm-values") is False
+
+
+@pytest.mark.parametrize(
+    ("check_dependencies", "expected"),
+    [(False, []), (True, ["gitlab_project:infra/vm-values"])],
+)
+def test_gitlab_project_probes_only_with_dependency_checks(
+    backend: GitLabGitOpsBackend, check_dependencies: bool, expected: list[str]
+) -> None:
+    settings = Settings(
+        webhook_token="test-webhook-token-0001",
+        gitops_backend="gitlab",
+        gitlab_url="https://gitlab.test",
+        gitlab_token="glpat-test",  # type: ignore[arg-type]
+        argocd_sync_method="fake",
+        readiness_check_dependencies=check_dependencies,
+    )
+    assert list(build_readiness(settings, backend).probes) == expected
 
 
 @respx.mock
