@@ -42,6 +42,13 @@ async def test_status_healthy(api: ArgoCdApiSyncer) -> None:
 
 
 @respx.mock
+async def test_status_out_of_sync_not_safe(api: ArgoCdApiSyncer) -> None:
+    respx.get(APP_URL).respond(200, json=app_body(sync="OutOfSync"))
+    status = await api.get_status("victoria-metrics-region-a")
+    assert status.health == "Healthy" and not status.is_safe_to_change
+
+
+@respx.mock
 async def test_status_running_operation_not_safe(api: ArgoCdApiSyncer) -> None:
     respx.get(APP_URL).respond(200, json=app_body(phase="Running"))
     status = await api.get_status("victoria-metrics-region-a")

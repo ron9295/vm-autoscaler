@@ -411,7 +411,7 @@ class ScalingService:
         return decisions
 
     async def _argocd_precheck(self, target: Target) -> tuple[SkipReason, str] | None:
-        """Rule 6: don't stack restarts on a sick or busy app. Returns a skip reason or None."""
+        """Rule 6: don't stack a change on a sick, busy or out-of-sync app. Skip reason or None."""
         if not self._config.argocd_precheck:
             return None
         try:

@@ -87,11 +87,11 @@ Every rule below is implemented in `app/services/scaling_service.py` or
 | # | Rule | Why |
 |---|------|-----|
 | 1 | Only act if the alert label `autoscale="true"` and the component is in `enabled_components` (only `vmstorage`). | An explicit opt-in per alert rule. A missing label means "off". |
-| 2 | Only act if the value ≥ the policy's `trigger_percent`. | Protects against a misconfigured Grafana rule that fires too early. |
+| 2 | Only act if the value ≥ the policy's `trigger_percent`. The value is read only from the query `value_ref_id`; if it is absent or not a number the alert is skipped (`value_missing`) and a WARNING lists the available refIds. | Protects against a misconfigured Grafana rule that fires too early. |
 | 3 | **Cooldown** (24h by default). The last-scaled time comes from Git: in GitLab mode from the **commit history** of the values file (default), otherwise from an annotation `vm-autoscaler/last-scaled-storage` written with each change. | Gives the resize time to finish and show effect. Keeps the service stateless: no database, history lives in Git. Grafana re-sends firing alerts every `repeat_interval`; these are skipped. |
 | 4 | New size = current × (1 + step%), rounded up to whole Gi, capped at `max`. Already at max → skip `at_max_cap`, logged as **WARNING**. | Small, predictable steps. `at_max_cap` means a human must act (add vmstorage nodes, reduce retention). |
 | 5 | **Only increase. Storage never shrinks.** | A PVC cannot be shrunk; a smaller value in Git would only break the sync. |
-| 6 | **Argo pre-check:** skip if the app is not `Healthy` or a sync is already running (`deployment_not_healthy`). Configurable (`argocd_precheck`), on by default. | Don't stack a change on a cluster that is already changing or sick. |
+| 6 | **Argo pre-check:** skip if the app is not `Healthy` **and `Synced`**, or a sync is already running (`deployment_not_healthy`). Configurable (`argocd_precheck`), on by default. | Don't stack a change on a cluster that is already changing or sick. An `OutOfSync` app has an unrelated pending Git change that our targeted sync could roll out too. |
 | 7 | One change per target at a time (in-process lock). The Deployment runs **1 replica** with `Recreate`. | Two concurrent changes to the same target would conflict. |
 | 8 | Optimistic concurrency: the state's `version` (in GitLab: the file's `last_commit_id`) must still match when writing. On a conflict, re-read once and recompute; a second conflict skips (`gitops_conflict`). If the backend is unavailable, skip and **do not sync**. | Never overwrite someone else's change; never sync Argo without a confirmed commit. |
 | 9 | **Modes** (see below). | Lets you roll out from "watch only" to "fully automatic". |
@@ -334,6 +334,9 @@ decisions. This is the simpler correct choice:
   for completed work, or it re-sends the alert on its repeat interval.
 * Handling is idempotent (cooldown from Git + in-memory record + idempotency key), so a
   re-send after a timeout is harmless.
+* When any decision is `gitops_unavailable` or `argocd_unavailable` (a transient outage),
+  the handler returns `503` with the same JSON body, so Grafana re-sends the alert
+  promptly. Every other outcome, including other skips, is `202`.
 
 All calls have timeouts. Keep `GITOPS_API_TIMEOUT_SECONDS × (retries + 1)` plus Argo
 timeouts below the webhook timeout of your Grafana version.
@@ -517,13 +520,18 @@ Metrics on `/metrics`:
 | Metric | Labels |
 |--------|--------|
 | `vm_autoscaler_alerts_received_total` | `status` |
-| `vm_autoscaler_alerts_ignored_total` | `reason` (`resolved`, `unsupported_resource`) |
+| `vm_autoscaler_alerts_ignored_total` | `reason` (`resolved`, `unsupported_resource`, `missing_label`) |
 | `vm_autoscaler_decisions_total` | `ocp_cluster`, `resource`, `decision`, `reason` |
 | `vm_autoscaler_unknown_targets_total` | – |
 | `vm_autoscaler_gitops_requests_total` | `operation`, `result` |
 | `vm_autoscaler_gitops_request_duration_seconds` | `operation` |
 | `vm_autoscaler_argocd_sync_total` | `result` |
 | `vm_autoscaler_handle_duration_seconds` | – |
+
+Response codes of `/webhook/grafana`: `202` normally; `503` (same body) if a decision is
+`gitops_unavailable` or `argocd_unavailable`, so Grafana retries; `401` bad token; `422` body
+that is not valid JSON or not a Grafana webhook. An alert missing a required label is
+ignored on its own (`missing_label`, WARNING log), never a `422` for the batch.
 
 Decisions: `applied`, `change_request_opened`, `dry_run`, `skipped`. Skip reasons include
 `cooldown_active`, `at_max_cap`, `below_threshold`, `value_not_set`, `unknown_target`,
@@ -546,6 +554,9 @@ sum by (ocp_cluster) (increase(vm_autoscaler_decisions_total{decision="applied"}
 
 # Errors talking to GitLab / Argo, or a bug
 increase(vm_autoscaler_decisions_total{reason=~"gitops_.*|argocd_.*|internal_error"}[1h]) > 0
+
+# Alert rules missing a required label (ocp_cluster/namespace/component/resource)
+increase(vm_autoscaler_alerts_ignored_total{reason="missing_label"}[1h]) > 0
 
 # Alert rules that send something other than storage (old cpu/memory/replica rules?)
 increase(vm_autoscaler_alerts_ignored_total{reason="unsupported_resource"}[1h]) > 0

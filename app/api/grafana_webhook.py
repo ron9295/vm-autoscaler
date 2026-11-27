@@ -14,7 +14,6 @@ from typing import Any, cast, get_args
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.domain.errors import AlertParseError
 from app.domain.models import (
     IgnoredAlert,
     ParsedWebhook,
@@ -29,6 +28,7 @@ REQUIRED_LABELS = ("ocp_cluster", "namespace", "component", "resource")
 AUTOSCALE_LABEL = "autoscale"
 IGNORED_RESOLVED = "resolved"
 IGNORED_UNSUPPORTED_RESOURCE = "unsupported_resource"
+IGNORED_MISSING_LABEL = "missing_label"
 
 
 class GrafanaAlert(BaseModel):
@@ -54,7 +54,7 @@ class GrafanaWebhook(BaseModel):
 
 
 def parse_webhook(payload: GrafanaWebhook, value_ref_id: str) -> ParsedWebhook:
-    """Parse the webhook. Raises AlertParseError if a firing alert misses a required label."""
+    """Parse the webhook. Firing alerts that cannot be acted on are listed as ignored."""
     requests: list[ScaleRequest] = []
     ignored: list[IgnoredAlert] = []
     for alert in payload.alerts:
@@ -69,7 +69,20 @@ def parse_webhook(payload: GrafanaWebhook, value_ref_id: str) -> ParsedWebhook:
                 )
             )
             continue
-        _check_required_labels(alert)
+        missing = _missing_label(alert)
+        if missing is not None:
+            logger.warning(
+                "ignoring alert with a missing required label; fix its alert rule",
+                extra={"fields": {"fingerprint": alert.fingerprint, "missing_label": missing}},
+            )
+            ignored.append(
+                IgnoredAlert(
+                    fingerprint=alert.fingerprint,
+                    status=alert.status,
+                    reason=IGNORED_MISSING_LABEL,
+                )
+            )
+            continue
         resource = alert.labels["resource"]
         if resource not in get_args(ResourceName):
             logger.warning(
@@ -94,13 +107,12 @@ def parse_webhook(payload: GrafanaWebhook, value_ref_id: str) -> ParsedWebhook:
     return ParsedWebhook(requests=requests, ignored=ignored)
 
 
-def _check_required_labels(alert: GrafanaAlert) -> None:
+def _missing_label(alert: GrafanaAlert) -> str | None:
+    """Return the name of the first required label the alert lacks, or None."""
     for name in REQUIRED_LABELS:
         if not alert.labels.get(name):
-            raise AlertParseError(
-                f"alert {alert.fingerprint or '<no fingerprint>'} is missing required label "
-                f"'{name}'"
-            )
+            return name
+    return None
 
 
 def _to_scale_request(alert: GrafanaAlert, value_ref_id: str) -> ScaleRequest:
@@ -123,11 +135,20 @@ def _to_scale_request(alert: GrafanaAlert, value_ref_id: str) -> ScaleRequest:
 
 
 def extract_value(values: dict[str, Any] | None, ref_id: str) -> float | None:
-    """Return values[ref_id], or the first numeric value, or None if there is none."""
+    """Return values[ref_id] if it is a number, else None (fail closed, no guessing).
+
+    Taking "the first number" when the configured query is absent could scale on the wrong
+    metric (e.g. a raw byte count instead of a percent), so a missing ref_id means no value.
+    """
     if not values:
         return None
-    candidates = [values.get(ref_id), *values.values()]
-    for value in candidates:
-        if isinstance(value, int | float) and not isinstance(value, bool):
-            return float(value)
+    if ref_id not in values:
+        logger.warning(
+            "alert has no value for the configured query ref_id",
+            extra={"fields": {"ref_id": ref_id, "available": sorted(values)}},
+        )
+        return None
+    value = values[ref_id]
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        return float(value)
     return None

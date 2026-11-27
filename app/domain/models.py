@@ -182,8 +182,12 @@ class AppStatus(BaseModel):
 
     @property
     def is_safe_to_change(self) -> bool:
-        """True when the app is Healthy and no sync operation is running."""
-        return self.health == "Healthy" and not self.operation_in_progress
+        """True when the app is Healthy and Synced and no sync operation is running.
+
+        OutOfSync means Git holds a change that is not rolled out yet; our targeted sync
+        could then deploy that unrelated change together with ours.
+        """
+        return self.health == "Healthy" and self.sync == "Synced" and not self.operation_in_progress
 
 
 class ScaleDecision(BaseModel):
