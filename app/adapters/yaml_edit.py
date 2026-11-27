@@ -6,7 +6,9 @@ kept. The goal: the diff in GitLab shows only the values we changed.
 Rules:
 * `set_path` never creates structure. Every key on the path must already exist.
 * The only structure we may create is the cooldown annotations map (`ensure_mapping`).
-* `check_diff` refuses an edit that changed more lines than expected (formatting drift).
+* `check_diff` refuses an edit that changed more lines than expected (formatting drift),
+  including line-ending changes.
+* The file's newline style is kept: a CRLF file is written back with CRLF.
 """
 
 from __future__ import annotations
@@ -15,9 +17,8 @@ import difflib
 import io
 import re
 from dataclasses import dataclass
-from decimal import Decimal
 from itertools import pairwise
-from typing import Any, Literal
+from typing import Any
 
 from ruamel.yaml import YAML
 from ruamel.yaml.comments import CommentedMap
@@ -25,9 +26,7 @@ from ruamel.yaml.error import YAMLError
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScalarString
 
 from app.domain.errors import GitOpsManifestError
-from app.domain.quantity import QuantityError, parse_bytes, parse_cpu
-
-QuantityKind = Literal["cpu", "bytes", "count"]
+from app.domain.quantity import QuantityError, parse_bytes
 
 _SEQUENCE_ITEM_RE = re.compile(r"^(\s*)- ")
 _KEY_LINE_RE = re.compile(r"^(\s*)[^\s#-][^:#]*:\s*(#.*)?$")
@@ -47,6 +46,7 @@ class Manifest:
     yaml: YAML
     preamble: str  # comment lines before the first `---` (ruamel would drop them)
     trailing_newline: bool
+    newline: str  # "\n" or "\r\n", as in the original file
 
 
 def _detect_indent(text: str) -> tuple[int, int, int]:
@@ -85,7 +85,15 @@ def _split_preamble(text: str) -> tuple[str, str]:
 
 
 def load(text: str) -> Manifest:
-    """Parse a (possibly multi-document) YAML file in round-trip mode."""
+    """Parse a (possibly multi-document) YAML file in round-trip mode.
+
+    CRLF files are parsed as LF and written back as CRLF by `dump`. (ruamel on its own
+    writes a mix of both.) A file with mixed line endings comes back with one style only,
+    which `check_diff` then refuses.
+    """
+    newline = "\r\n" if "\r\n" in text else "\n"
+    trailing_newline = text.endswith("\n")
+    text = text.replace("\r\n", "\n")
     preamble, body = _split_preamble(text)
     mapping, sequence, offset = _detect_indent(body)
     yaml = YAML(typ="rt")
@@ -97,7 +105,7 @@ def load(text: str) -> Manifest:
         documents = [doc for doc in yaml.load_all(body)]
     except YAMLError as exc:
         raise GitOpsManifestError(f"file is not valid YAML: {exc}") from exc
-    return Manifest(documents, yaml, preamble, text.endswith("\n"))
+    return Manifest(documents, yaml, preamble, trailing_newline, newline)
 
 
 def dump(manifest: Manifest) -> str:
@@ -107,6 +115,8 @@ def dump(manifest: Manifest) -> str:
     text = manifest.preamble + stream.getvalue()
     if not manifest.trailing_newline:
         text = text.rstrip("\n")
+    if manifest.newline != "\n":
+        text = text.replace("\n", manifest.newline)
     return text
 
 
@@ -138,11 +148,6 @@ def select_document(manifest: Manifest, kind: str | None, name: str | None) -> A
 
 def _split_path(path: str) -> list[str]:
     return [part for part in path.split(".") if part]
-
-
-def join_path(*parts: str) -> str:
-    """Join dotted paths, ignoring empty parts ("" + "a.b" -> "a.b")."""
-    return ".".join(part for part in parts if part)
 
 
 def get_path(node: Any, path: str) -> Any:
@@ -207,36 +212,28 @@ def scalar_text(value: Any) -> str | None:
 # --------------------------------------------------------------------------------------
 
 
-def restyle_quantity(old: Any, new_text: str, kind: QuantityKind) -> Any:
-    """Return `new_text` in the same style as `old`.
+def restyle_quantity(old: Any, new_text: str) -> Any:
+    """Return the new size `new_text` in the same style as the `old` value in the file.
 
-    * Unit style: `16384Mi` stays in Mi, `4000m` stays in millicores, plain bytes stay plain.
-    * Type style: a quoted string stays quoted (same quotes), an unquoted number stays a number.
+    * Unit style: `30Gi` stays in Gi, `30720Mi` stays in Mi, plain bytes stay plain bytes
+      (when the new size is a whole number of that unit).
+    * Type style: a quoted string keeps its quotes; an unquoted number stays a number.
     """
-    old_text = str(old)
-    text = _match_unit(old_text, new_text, kind)
+    text = _match_byte_unit(str(old), new_text)
     if isinstance(old, DoubleQuotedScalarString):
         return DoubleQuotedScalarString(text)
     if isinstance(old, SingleQuotedScalarString):
         return SingleQuotedScalarString(text)
-    if isinstance(old, int | float) and not isinstance(old, bool):
-        return _as_number(text)
+    if isinstance(old, int) and not isinstance(old, bool) and text.isdigit():
+        return int(text)
     return text
 
 
-def _match_unit(old_text: str, new_text: str, kind: QuantityKind) -> str:
+def _match_byte_unit(old_text: str, new_text: str) -> str:
     try:
-        if kind == "bytes":
-            return _match_byte_unit(old_text, new_text)
-        if kind == "cpu":
-            return _match_cpu_unit(old_text, new_text)
+        new_bytes = parse_bytes(new_text)
     except QuantityError:
         return new_text
-    return new_text
-
-
-def _match_byte_unit(old_text: str, new_text: str) -> str:
-    new_bytes = parse_bytes(new_text)
     if old_text.isdigit():
         return str(new_bytes)
     for suffix, multiplier in _BINARY_UNITS.items():
@@ -245,35 +242,19 @@ def _match_byte_unit(old_text: str, new_text: str) -> str:
     return new_text
 
 
-def _match_cpu_unit(old_text: str, new_text: str) -> str:
-    cores = parse_cpu(new_text)
-    if old_text.endswith("m"):
-        return f"{int(cores * 1000)}m"
-    if "." in old_text:
-        return format(cores.normalize(), "f")
-    return new_text
-
-
-def _as_number(text: str) -> Any:
-    try:
-        number = Decimal(text)
-    except ArithmeticError:
-        return text
-    if not number.is_finite():
-        return text
-    if number == number.to_integral_value() and "." not in text:
-        return int(number)
-    return float(number) if "." in text else text
-
-
 # --------------------------------------------------------------------------------------
 # Diff guard
 # --------------------------------------------------------------------------------------
 
 
 def check_diff(before: str, after: str, max_changed: int, max_added: int) -> None:
-    """Refuse edits that touched more lines than expected (e.g. ruamel re-formatting)."""
-    matcher = difflib.SequenceMatcher(a=before.splitlines(), b=after.splitlines(), autojunk=False)
+    """Refuse edits that touched more lines than expected (e.g. ruamel re-formatting).
+
+    Lines are compared with their line endings, so a CRLF -> LF rewrite counts as a change.
+    """
+    matcher = difflib.SequenceMatcher(
+        a=before.splitlines(keepends=True), b=after.splitlines(keepends=True), autojunk=False
+    )
     changed = added = 0
     for tag, i1, i2, j1, j2 in matcher.get_opcodes():
         if tag in ("replace", "delete"):

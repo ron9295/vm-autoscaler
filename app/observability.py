@@ -2,7 +2,7 @@
 
 Log structured fields like this:
 
-    logger.info("decision", extra={"fields": {"resource": "cpu", "decision": "applied"}})
+    logger.info("decision", extra={"fields": {"resource": "storage", "decision": "applied"}})
 """
 
 from __future__ import annotations
@@ -98,6 +98,12 @@ class Metrics:
             ["status"],
             registry=self.registry,
         )
+        self.alerts_ignored = Counter(
+            "vm_autoscaler_alerts_ignored_total",
+            "Alerts deliberately not acted on (resolved, unsupported_resource).",
+            ["reason"],
+            registry=self.registry,
+        )
         self.decisions = Counter(
             "vm_autoscaler_decisions_total",
             "Scaling decisions made.",
@@ -111,13 +117,13 @@ class Metrics:
         )
         self.gitops_requests = Counter(
             "vm_autoscaler_gitops_requests_total",
-            "Calls to the internal GitOps backend.",
+            "Operations on the GitOps backend (GitLab or internal), by result.",
             ["operation", "result"],
             registry=self.registry,
         )
         self.gitops_duration = Histogram(
             "vm_autoscaler_gitops_request_duration_seconds",
-            "Duration of calls to the internal GitOps backend, including retries.",
+            "Duration of GitOps backend operations (GitLab or internal), including retries.",
             ["operation"],
             registry=self.registry,
         )

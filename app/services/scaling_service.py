@@ -45,7 +45,6 @@ from app.domain.models import (
 from app.domain.ports import DeploymentSyncer, GitOpsBackend
 from app.domain.strategies import ComputeResult, ScalingStrategy, build_strategy_registry
 from app.observability import Metrics
-from app.services.alert_parser import group_by_target
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +52,14 @@ COOLDOWN_ANNOTATION_PREFIX = "vm-autoscaler/last-scaled-"
 ARGOCD_SYNC_FAILED = "argocd_sync_failed"
 
 Clock = Callable[[], datetime]
+
+
+def group_by_target(requests: list[ScaleRequest]) -> dict[TargetKey, list[ScaleRequest]]:
+    """Group requests so all resources of one target end up in one commit and one sync."""
+    groups: dict[TargetKey, list[ScaleRequest]] = {}
+    for request in requests:
+        groups.setdefault(request.target_key, []).append(request)
+    return groups
 
 
 def utc_now() -> datetime:
@@ -156,12 +163,32 @@ class ScalingService:
         decisions: list[ScaleDecision] = []
         try:
             for key, requests in group_by_target(parsed.requests).items():
-                decisions.extend(await self._handle_target(key, requests))
+                decisions.extend(await self._handle_target_safely(key, requests))
         finally:
             self._metrics.handle_duration.observe(time.monotonic() - started)
         for decision in decisions:
             self._record(decision)
         return decisions
+
+    async def _handle_target_safely(
+        self, key: TargetKey, requests: list[ScaleRequest]
+    ) -> list[ScaleDecision]:
+        """Handle one target; an unexpected bug skips only this target, never the webhook.
+
+        Known failures (GitOps/Argo errors) are already turned into skip decisions inside
+        `_handle_target`. This is the last line of defence for anything else, so one bad
+        target cannot hide the decisions for the others. `asyncio.CancelledError` is a
+        BaseException and is deliberately not caught (shutdown must still cancel us).
+        """
+        try:
+            return await self._handle_target(key, requests)
+        except Exception:
+            logger.error(
+                "unexpected error while handling target; skipped",
+                exc_info=True,
+                extra={"fields": {"target": str(key)}},
+            )
+            return skip_all(requests, SkipReason.INTERNAL_ERROR)
 
     async def _handle_target(
         self, key: TargetKey, requests: list[ScaleRequest]
@@ -416,7 +443,9 @@ class ScalingService:
     def _build_reason(self, target: Target, planned: list[PlannedChange]) -> str:
         """Commit / MR message. First line like:
 
-        [vm-autoscaler] ocp-prod-region-a/monitoring vmstorage cpu 4 -> 5 (usage 91.2% >= 80%)
+        [vm-autoscaler] ocp-a/monitoring vmstorage storage 30Gi -> 36Gi (usage 85.0% >= 80%)
+
+        The GitLab backend reads cooldowns back from this title, so keep its format.
         """
         key = target.key
         summaries = []
@@ -430,12 +459,11 @@ class ScalingService:
             )
             details.append(
                 f"- {request.resource}: alert {request.alert_name or '-'} "
-                f"(fingerprint {request.fingerprint}), policy step "
-                f"{policy.step_percent if policy.step is None else policy.step}"
-                f"{'%' if policy.step is None else ''}, max {policy.max}, "
-                f"cooldown {policy.cooldown}"
+                f"(fingerprint {request.fingerprint}), policy step {policy.step_percent:g}%, "
+                f"max {policy.max}, cooldown {policy.cooldown}"
             )
-            details.extend(f"  {c.yaml_path}: {c.old} -> {c.new}" for c in p.changes)
+            # Field names, not YAML paths: each backend knows its own file layout.
+            details.extend(f"  {c.field}: {c.old} -> {c.new}" for c in p.changes)
         title = (
             f"{self._config.change_reason_prefix} {key.ocp_cluster}/{key.namespace} "
             f"{key.component} {', '.join(summaries)}"
@@ -490,6 +518,7 @@ _WARNING_REASONS = {
     SkipReason.GITOPS_TARGET_NOT_FOUND.value,
     SkipReason.ARGOCD_UNAVAILABLE.value,
     SkipReason.DEPLOYMENT_NOT_HEALTHY.value,
+    SkipReason.INTERNAL_ERROR.value,
     ARGOCD_SYNC_FAILED,
 }
 

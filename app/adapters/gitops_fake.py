@@ -90,8 +90,7 @@ class FakeGitOpsBackend:
             )
         updated = current.model_copy(deep=True)
         for change in changes:
-            value: str | int = int(change.new) if change.field == "replicas" else change.new
-            setattr(updated, change.field, value)
+            setattr(updated, change.field, change.new)
         updated.annotations.update(annotations)
         self._version_counter += 1
         updated.version = f"fake-{self._version_counter}"

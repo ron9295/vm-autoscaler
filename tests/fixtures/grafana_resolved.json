@@ -6,16 +6,16 @@
     {
       "status": "resolved",
       "labels": {
-        "alertname": "VmstorageHighCpu",
+        "alertname": "VmstorageDiskFilling",
         "ocp_cluster": "ocp-prod-region-a",
         "namespace": "monitoring",
         "component": "vmstorage",
-        "resource": "cpu",
+        "resource": "storage",
         "autoscale": "true",
         "grafana_folder": "VictoriaMetrics"
       },
       "annotations": {
-        "summary": "vmstorage cpu usage is 40.0%"
+        "summary": "Fullest vmstorage PVC is 40.0% used"
       },
       "startsAt": "2026-11-27T09:00:00Z",
       "endsAt": "2026-11-27T10:00:00Z",
@@ -32,7 +32,7 @@
     }
   ],
   "groupLabels": {
-    "alertname": "VmstorageHighCpu"
+    "alertname": "VmstorageDiskFilling"
   },
   "commonLabels": {},
   "commonAnnotations": {},
@@ -42,5 +42,5 @@
   "truncatedAlerts": 0,
   "title": "[RESOLVED:1] vmstorage",
   "state": "ok",
-  "message": "vmstorage pressure"
+  "message": "vmstorage disk filling"
 }

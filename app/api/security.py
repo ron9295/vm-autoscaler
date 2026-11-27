@@ -16,9 +16,12 @@ def verify_webhook_token(request: Request, container: ContainerDep) -> None:
     """
     header = request.headers.get("Authorization", "")
     scheme, _, presented = header.partition(" ")
+    presented = presented.strip()
     expected = container.settings.webhook_token.get_secret_value()
-    valid = scheme.lower() == "bearer" and hmac.compare_digest(
-        presented.strip().encode(), expected.encode()
+    valid = (
+        scheme.lower() == "bearer"
+        and bool(presented)  # never accept an empty token, whatever the config says
+        and hmac.compare_digest(presented.encode(), expected.encode())
     )
     if not valid:
         raise HTTPException(

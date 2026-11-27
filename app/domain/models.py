@@ -12,8 +12,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-ResourceName = Literal["cpu", "memory", "storage", "replicas"]
-RESOURCE_NAMES: tuple[ResourceName, ...] = ("cpu", "memory", "storage", "replicas")
+# Only storage is scaled for now. CPU, memory and replica scaling were removed; they can be
+# restored from git history (commit "Full version: cpu, memory, storage and replica scaling").
+ResourceName = Literal["storage"]
+RESOURCE_NAMES: tuple[ResourceName, ...] = ("storage",)
 
 
 class Mode(StrEnum):
@@ -69,6 +71,7 @@ class SkipReason(StrEnum):
     GITOPS_REJECTED = "gitops_rejected"
     GITOPS_ERROR = "gitops_error"
     DUPLICATE_IN_BATCH = "duplicate_in_batch"
+    INTERNAL_ERROR = "internal_error"  # unexpected bug; logged with a traceback
 
 
 class TargetKey(BaseModel):
@@ -97,13 +100,10 @@ class Policy(BaseModel):
     """Effective scaling policy for one resource of one target."""
 
     trigger_percent: float = Field(gt=0, le=100)
-    step_percent: float | None = Field(default=None, gt=0, le=200)
-    step: int | None = Field(default=None, gt=0)
+    step_percent: float = Field(gt=0, le=200)
     max: str
     cooldown: timedelta
     mode: Mode | None = None
-    scale_requests_with_limits: bool = True
-    requests_equal_limits: bool = False
 
 
 class Target(BaseModel):
@@ -146,19 +146,12 @@ class ParsedWebhook(BaseModel):
 class ComponentState(BaseModel):
     """Current resource values of a component, as stored in the Argo CD source repo."""
 
-    cpu_request: str | None = None
-    cpu_limit: str | None = None
-    memory_request: str | None = None
-    memory_limit: str | None = None
     storage: str | None = None
-    replicas: int | None = None
     annotations: dict[str, str] = Field(default_factory=dict)
     version: str | None = None  # optimistic-concurrency token (commit sha / etag)
 
 
-StateField = Literal[
-    "cpu_request", "cpu_limit", "memory_request", "memory_limit", "storage", "replicas"
-]
+StateField = Literal["storage"]
 
 
 class ResourceChange(BaseModel):

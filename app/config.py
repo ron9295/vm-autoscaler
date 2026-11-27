@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from datetime import timedelta
 from pathlib import Path
+from string import Formatter
 from typing import Annotated, Any, Literal
 
 import yaml
@@ -19,6 +20,7 @@ from pydantic import (
     Field,
     SecretStr,
     ValidationError,
+    field_validator,
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -32,11 +34,14 @@ from app.domain.models import (
     Target,
     TargetKey,
 )
-from app.domain.quantity import QuantityError, parse_bytes, parse_cpu
+from app.domain.quantity import QuantityError, parse_bytes
 
 # --------------------------------------------------------------------------------------
 # Environment settings
 # --------------------------------------------------------------------------------------
+
+
+MIN_WEBHOOK_TOKEN_LENGTH = 16
 
 
 class Settings(BaseSettings):
@@ -54,8 +59,9 @@ class Settings(BaseSettings):
     gitops_api_token: SecretStr | None = None
     gitops_api_timeout_seconds: float = 10.0
     gitops_api_max_retries: int = Field(default=3, ge=0, le=10)
-    # TODO(api): set to false if the backend cannot store annotations yet. Cooldowns then
-    # live only in memory and reset when the pod restarts.
+    # GITOPS_BACKEND=internal only (ignored for gitlab and fake).
+    # TODO(api): set to false if the internal backend cannot store annotations yet.
+    # Cooldowns then live only in memory and reset when the pod restarts.
     gitops_stores_annotations: bool = True
     gitops_fake_seed_path: Path | None = None
 
@@ -73,6 +79,17 @@ class Settings(BaseSettings):
     ca_bundle_path: Path | None = None
 
     readiness_check_dependencies: bool = False
+
+    @field_validator("webhook_token")
+    @classmethod
+    def _check_webhook_token(cls, value: SecretStr) -> SecretStr:
+        """An empty or short token would make the webhook effectively unauthenticated."""
+        if len(value.get_secret_value().strip()) < MIN_WEBHOOK_TOKEN_LENGTH:
+            raise ValueError(
+                f"WEBHOOK_TOKEN must be at least {MIN_WEBHOOK_TOKEN_LENGTH} characters; "
+                "generate one with `openssl rand -hex 32`"
+            )
+        return value
 
     @model_validator(mode="after")
     def _check_required_urls(self) -> Settings:
@@ -116,13 +133,10 @@ class PolicyConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     trigger_percent: float = Field(gt=0, le=100)
-    step_percent: float | None = Field(default=None, gt=0, le=200)
-    step: int | None = Field(default=None, gt=0)
+    step_percent: float = Field(gt=0, le=200)
     max: Annotated[str, BeforeValidator(str)]
     cooldown: Duration
     mode: Mode | None = None
-    scale_requests_with_limits: bool = True
-    requests_equal_limits: bool = False
 
 
 class DefaultsConfig(BaseModel):
@@ -133,24 +147,53 @@ class DefaultsConfig(BaseModel):
     value_ref_id: str = "B"
 
 
+_TEMPLATE_FIELDS = {"ocp_cluster", "namespace", "component"}
+ProjectId = Annotated[str, BeforeValidator(str)]  # "group/repo" or a numeric id
+
+
+class GitLabLocation(BaseModel):
+    """Where one target's values live in GitLab, fully resolved. Used by the adapter."""
+
+    project: str
+    branch: str
+    file: str
+    document_kind: str | None  # None: no kind filter (Helm values file)
+    document_name: str | None  # None: no metadata.name filter
+    storage_path: str  # dotted path from the document root, e.g. vmstorage.pvc.size
+    annotations_path: str  # only used with cooldown_source: annotations
+
+
 class GitLabTargetConfig(BaseModel):
-    """Where a target's manifest lives in GitLab (GITOPS_BACKEND=gitlab)."""
+    """Optional per-target overrides of the global `gitlab` settings."""
 
     model_config = ConfigDict(extra="forbid")
 
-    project: Annotated[str, BeforeValidator(str)]  # "infra/monitoring" or a numeric id
-    branch: str = "main"
-    file: str  # path inside the repo, e.g. clusters/region-a/vmcluster.yaml
-    document_kind: str | None = "VMCluster"  # null for a Helm values file
-    document_name: str | None = None  # metadata.name; needed if several documents match
-    yaml_root: str = "spec.vmstorage"  # e.g. "vmstorage" for a Helm values file
-    annotations_path: str = "metadata.annotations"  # relative to the document root
+    project: ProjectId | None = None
+    branch: str | None = None
+    file: str | None = None  # overrides gitlab.file_template for this target
+    document_kind: str | None = None
+    document_name: str | None = None
+    storage_path: str | None = None
+    annotations_path: str | None = None
 
 
 class GitLabConfig(BaseModel):
-    """Global GitLab commit settings."""
+    """Global GitLab settings (GITOPS_BACKEND=gitlab).
+
+    Repo layout: <ocp_cluster>/<namespace>/<values file>, with the PVC size at
+    vmstorage.pvc.size. Each target's file is `file_template` filled in with the target's
+    ocp_cluster, namespace and component, unless the target sets its own `file`.
+    """
 
     model_config = ConfigDict(extra="forbid")
+
+    project: ProjectId | None = None
+    branch: str = "main"
+    file_template: str | None = None  # e.g. "{ocp_cluster}/{namespace}/values.yaml"
+    document_kind: str | None = None  # set (e.g. VMCluster) only for multi-document files
+    document_name: str | None = None
+    storage_path: str = "vmstorage.pvc.size"
+    annotations_path: str = "vmAutoscaler"  # top-level map; only for cooldown_source=annotations
 
     author_name: str = "vm-autoscaler"
     author_email: str = "vm-autoscaler@example.local"
@@ -161,6 +204,18 @@ class GitLabConfig(BaseModel):
     #                 written into the manifest; stateless, clean diffs)
     #   annotations - vm-autoscaler/last-scaled-<resource> annotations in the manifest
     cooldown_source: Literal["commits", "annotations"] = "commits"
+
+    @model_validator(mode="after")
+    def _check_template(self) -> GitLabConfig:
+        if self.file_template is not None:
+            fields = {name for _, name, _, _ in Formatter().parse(self.file_template) if name}
+            unknown = fields - _TEMPLATE_FIELDS
+            if unknown:
+                raise ValueError(
+                    f"gitlab.file_template uses unknown placeholders {sorted(unknown)}; "
+                    f"allowed: {sorted(_TEMPLATE_FIELDS)}"
+                )
+        return self
 
 
 class TargetConfig(BaseModel):
@@ -246,38 +301,57 @@ class AppConfig(BaseModel):
         ]
         return max(cooldowns, default=timedelta(days=1))
 
-    def gitlab_targets(self) -> dict[TargetKey, GitLabTargetConfig]:
-        """GitLab file locations of the targets that have a `gitlab` block."""
-        return {t.key: t.gitlab for t in self.targets if t.gitlab is not None}
+    def gitlab_location(self, target: TargetConfig) -> GitLabLocation:
+        """Resolve where a target's values file lives. Raises ConfigError if incomplete."""
+        merged: dict[str, Any] = self.gitlab.model_dump(
+            include={
+                "project",
+                "branch",
+                "document_kind",
+                "document_name",
+                "storage_path",
+                "annotations_path",
+            }
+        )
+        if target.gitlab is not None:
+            merged.update(target.gitlab.model_dump(exclude_unset=True))
+        file = merged.pop("file", None)
+        if file is None and self.gitlab.file_template is not None:
+            file = self.gitlab.file_template.format(
+                ocp_cluster=target.ocp_cluster,
+                namespace=target.namespace,
+                component=target.component,
+            )
+        problems = [
+            name
+            for name, value in (("project", merged.get("project")), ("file", file))
+            if not value
+        ]
+        if problems:
+            raise ConfigError(
+                f"target {target.key}: GitLab {' and '.join(problems)} not set "
+                "(set gitlab.project / gitlab.file_template, or per-target gitlab overrides)"
+            )
+        return GitLabLocation(file=file, **merged)
+
+    def gitlab_targets(self) -> dict[TargetKey, GitLabLocation]:
+        """Resolved GitLab file locations of all targets."""
+        return {target.key: self.gitlab_location(target) for target in self.targets}
 
 
 def _check_policy(resource: ResourceName, policy: PolicyConfig) -> None:
-    """Make sure each policy has the step and max format its resource needs."""
+    """Make sure the policy's max is a valid size."""
     try:
-        if resource == "replicas":
-            if policy.step is None:
-                raise ValueError("replicas policy needs 'step'")
-            int(policy.max)
-            return
-        if policy.step_percent is None:
-            raise ValueError(f"{resource} policy needs 'step_percent'")
-        if resource == "cpu":
-            parse_cpu(policy.max)
-        else:
-            parse_bytes(policy.max)
-    except (QuantityError, ValueError) as exc:
-        raise ValueError(f"policy {resource}: {exc}") from exc
+        parse_bytes(policy.max)
+    except QuantityError as exc:
+        raise ValueError(f"policy {resource}: max {policy.max!r}: {exc}") from exc
 
 
 def check_backend_requirements(settings: Settings, config: AppConfig) -> None:
     """Fail fast when the chosen GitOps backend needs config the targets don't have."""
     if settings.gitops_backend != "gitlab":
         return
-    missing = [str(t.key) for t in config.targets if t.gitlab is None]
-    if missing:
-        raise ConfigError(
-            f"GITOPS_BACKEND=gitlab but these targets have no 'gitlab' block: {missing}"
-        )
+    config.gitlab_targets()  # raises ConfigError naming the first incomplete target
 
 
 def load_app_config(path: Path) -> AppConfig:

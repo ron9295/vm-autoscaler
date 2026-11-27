@@ -9,10 +9,10 @@ from functools import partial
 
 from app.adapters.argocd_api import ArgoCdApiSyncer
 from app.adapters.argocd_cli import ArgoCdCliSyncer
-from app.adapters.argocd_fake import FakeDeploymentSyncer
+from app.adapters.argocd_fake import FakeArgoCdSyncer
 from app.adapters.gitops_fake import FakeGitOpsBackend
 from app.adapters.gitops_gitlab import GitLabGitOpsBackend
-from app.adapters.gitops_internal import InternalGitOpsClient
+from app.adapters.gitops_internal import InternalGitOpsBackend
 from app.adapters.http_common import build_verify
 from app.config import AppConfig, Settings
 from app.domain.ports import DeploymentSyncer, GitOpsBackend
@@ -68,7 +68,7 @@ def build_gitops_backend(settings: Settings, config: AppConfig, metrics: Metrics
             history_window=config.longest_cooldown(),
         )
     assert settings.gitops_api_url is not None  # checked by Settings
-    return InternalGitOpsClient(
+    return InternalGitOpsBackend(
         base_url=settings.gitops_api_url,
         token=_secret(settings.gitops_api_token),
         timeout=settings.gitops_api_timeout_seconds,
@@ -82,7 +82,7 @@ def build_syncer(settings: Settings) -> DeploymentSyncer:
     """Pick the Argo CD adapter from ARGOCD_SYNC_METHOD."""
     if settings.argocd_sync_method == "fake":
         logger.warning("using the FAKE Argo CD syncer; no app is ever synced")
-        return FakeDeploymentSyncer()
+        return FakeArgoCdSyncer()
     assert settings.argocd_url is not None  # checked by Settings
     token = _secret(settings.argocd_token)
     if settings.argocd_sync_method == "cli":
@@ -92,6 +92,7 @@ def build_syncer(settings: Settings) -> DeploymentSyncer:
             settings.http_timeout_seconds,
             insecure=settings.argocd_insecure_skip_verify,
             cli_path=settings.argocd_cli_path,
+            ca_bundle_path=settings.ca_bundle_path,
         )
     return ArgoCdApiSyncer(
         settings.argocd_url,
@@ -133,7 +134,12 @@ def build_container(
     """Build all objects. Tests may pass their own gitops/syncer/clock."""
     gitops = gitops or build_gitops_backend(settings, config, metrics)
     syncer = syncer or build_syncer(settings)
-    if not settings.gitops_stores_annotations:
+    # Only the internal backend may lack annotation support. GitLab keeps cooldowns in Git
+    # (commit history or annotations in the values file); the fake keeps them in memory.
+    annotations_supported = (
+        settings.gitops_stores_annotations if settings.gitops_backend == "internal" else True
+    )
+    if not annotations_supported:
         logger.warning(
             "GITOPS_STORES_ANNOTATIONS=false: cooldowns are kept in memory only and reset "
             "when the pod restarts"  # TODO(api): remove once the backend stores annotations
@@ -146,7 +152,7 @@ def build_container(
         syncer,
         metrics,
         clock=clock,
-        annotations_supported=settings.gitops_stores_annotations,
+        annotations_supported=annotations_supported,
     )
     return Container(
         settings=settings,

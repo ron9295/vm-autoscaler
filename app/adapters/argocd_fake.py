@@ -9,7 +9,7 @@ from app.domain.models import AppStatus, SyncResource
 
 
 @dataclass
-class FakeDeploymentSyncer:
+class FakeArgoCdSyncer:
     """Returns a configurable status and records sync calls."""
 
     status: AppStatus = field(default_factory=lambda: AppStatus(health="Healthy", sync="Synced"))

@@ -10,7 +10,7 @@ data:
   GITOPS_API_URL: "https://gitops-backend.internal.example"   # TODO: internal GitOps backend URL
   GITOPS_API_TIMEOUT_SECONDS: "10"     # also used for GitLab
   GITOPS_API_MAX_RETRIES: "3"          # also used for GitLab (GET only)
-  GITOPS_STORES_ANNOTATIONS: "true"                            # TODO(api): false until supported
+  GITOPS_STORES_ANNOTATIONS: "true"    # internal backend only; TODO(api): false until supported
   ARGOCD_URL: "https://openshift-gitops-server.openshift-gitops.svc"  # TODO: Argo CD API URL
   ARGOCD_SYNC_METHOD: "api"
   ARGOCD_INSECURE_SKIP_VERIFY: "false"
@@ -25,61 +25,75 @@ kind: ConfigMap
 metadata:
   name: vm-autoscaler-config
 data:
+  # Keep in sync with config.example.yaml.
   config.yaml: |
-    mode: dry_run            # dry_run -> merge_request -> direct_commit (see README "Rollout")
+    # vm-autoscaler configuration. Mounted from a ConfigMap at /etc/vm-autoscaler/config.yaml.
+    # Scope: vmstorage PVC size only.
+    #
+    # mode: the global delivery mode. A policy may only make it *safer*, never less safe:
+    #   dry_run        - compute and log the change, touch nothing (start here)
+    #   merge_request  - open a merge request that a human approves; no Argo sync
+    #   direct_commit  - commit to the Argo CD source repo and sync Argo
+    mode: dry_run
+
     change_reason_prefix: "[vm-autoscaler]"
+
+    # Only these components are acted on.
     enabled_components: [vmstorage]
+
+    # Skip direct commits while the Argo app is Progressing, Degraded or already syncing.
     argocd_precheck: true
+
     defaults:
-      value_ref_id: "B"
+      value_ref_id: "B"           # which Grafana query refId holds the usage percent
+
+    # GITOPS_BACKEND=gitlab. Repo layout (default branch main):
+    #   <ocp_cluster>/<namespace>/<values file>     with   vmstorage:
+    #                                                         pvc:
+    #                                                           size: 30Gi
     gitlab:
+      project: TODO/group/repo                       # TODO: GitLab project path or numeric id
+      branch: main
+      file_template: "{ocp_cluster}/{namespace}/TODO_VALUES_FILE.yaml"   # TODO: real file name
+      storage_path: vmstorage.pvc.size
       author_name: vm-autoscaler
-      author_email: vm-autoscaler@example.local    # TODO
-      commit_message_prefix: "[vm-autoscaler]"
-      cooldown_source: commits     # last-scaled time from Git history; nothing in the manifest
+      author_email: vm-autoscaler@example.local
+      commit_message_prefix: "[vm-autoscaler]"       # if set, replaces change_reason_prefix
+      cooldown_source: commits    # commits: last-scaled time from Git history (default)
+                                  # annotations: written into the values file at annotations_path
+
     policies:
-      cpu:
-        trigger_percent: 80
-        step_percent: 25
-        max: "16"
-        cooldown: 6h
-        scale_requests_with_limits: true
-      memory:
-        trigger_percent: 80
-        step_percent: 25
-        max: "64Gi"
-        cooldown: 6h
-        requests_equal_limits: true
       storage:
         trigger_percent: 80
         step_percent: 20
         max: "2Ti"
         cooldown: 24h
-      replicas:
-        trigger_percent: 85
-        step: 1
-        max: 20
-        cooldown: 24h
-        mode: merge_request
+
+    # One entry per <ocp_cluster>/<namespace> directory to manage. ocp_cluster and namespace
+    # must match the Grafana alert labels AND the directory names in the repo.
     targets:
       - ocp_cluster: ocp-prod-region-a
         namespace: monitoring
         component: vmstorage
-        argocd_app: victoria-metrics-region-a
+        argocd_app: victoria-metrics-region-a      # TODO
+        argocd_sync_resources:                     # sync only this object, not the whole app
+          - group: operator.victoriametrics.com
+            kind: VMCluster
+            name: vm-main                          # TODO
+            namespace: monitoring
+        storage_expansion_supported: true          # StorageClass has allowVolumeExpansion: true
+        # optional: gitlab: { file: other/path.yaml }   # per-target override of the template
+        # optional: policies: { storage: { max: "4Ti" } }
+      - ocp_cluster: ocp-prod-region-b
+        namespace: monitoring
+        component: vmstorage
+        argocd_app: victoria-metrics-region-b      # TODO
         argocd_sync_resources:
           - group: operator.victoriametrics.com
             kind: VMCluster
-            name: vm-main
+            name: vm-main                          # TODO
             namespace: monitoring
         storage_expansion_supported: true
-        gitops_ref: {}       # TODO(api)
-        gitlab:
-          project: infra/monitoring                 # TODO: path or numeric id
-          branch: main
-          file: clusters/region-a/vmcluster.yaml    # TODO
-          document_kind: VMCluster
-          document_name: vm-main
-          yaml_root: spec.vmstorage
 ---
 # Internal CA bundle. On OpenShift you can let the cluster inject the trusted CA bundle:
 apiVersion: v1

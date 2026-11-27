@@ -66,12 +66,20 @@ class ArgoCdApiSyncer:
         return parse_app_status(_json(response))
 
     async def sync(self, app: str, resources: list[SyncResource]) -> None:
-        """POST /api/v1/applications/{app}/sync limited to `resources`, never pruning.
+        """Refresh the app, then sync it limited to `resources`, never pruning.
+
+        The refresh (GET ...?refresh=normal, needs only `applications, get`) makes Argo CD
+        re-read the Git repo first, so the sync applies the commit we just made rather than
+        a cached older revision. No revision is pinned: pinning could roll back a newer
+        commit that landed in the meantime.
 
         "Another operation is already in progress" counts as success: an (auto-)sync
         is already rolling out the latest commit.
         """
-        path = f"/api/v1/applications/{quote(app, safe='')}/sync"
+        app_path = f"/api/v1/applications/{quote(app, safe='')}"
+        refreshed = await self._send("GET", app_path, params={"refresh": "normal"})
+        _raise_for_status(refreshed, app)
+        path = f"{app_path}/sync"
         body: dict[str, Any] = {"prune": False, "dryRun": False}
         if resources:
             body["resources"] = [resource.model_dump(exclude_none=True) for resource in resources]

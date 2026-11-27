@@ -17,12 +17,14 @@ def _record(message: str, fields: dict[str, object] | None = None) -> logging.Lo
 def test_json_log_has_fields_and_request_id() -> None:
     token = request_id_var.set("req-1")
     try:
-        line = JsonFormatter().format(_record("scale decision", {"resource": "cpu", "old": "4"}))
+        line = JsonFormatter().format(
+            _record("scale decision", {"resource": "storage", "old": "30Gi"})
+        )
     finally:
         request_id_var.reset(token)
     entry = json.loads(line)
     assert entry["message"] == "scale decision"
-    assert (entry["request_id"], entry["resource"], entry["old"]) == ("req-1", "cpu", "4")
+    assert (entry["request_id"], entry["resource"], entry["old"]) == ("req-1", "storage", "30Gi")
 
 
 def test_tokens_are_redacted() -> None:

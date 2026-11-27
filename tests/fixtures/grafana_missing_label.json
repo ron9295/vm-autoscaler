@@ -6,15 +6,15 @@
     {
       "status": "firing",
       "labels": {
-        "alertname": "VmstorageHighCpu",
+        "alertname": "VmstorageDiskFilling",
         "namespace": "monitoring",
         "component": "vmstorage",
-        "resource": "cpu",
+        "resource": "storage",
         "autoscale": "true",
         "grafana_folder": "VictoriaMetrics"
       },
       "annotations": {
-        "summary": "vmstorage cpu usage is 91.2%"
+        "summary": "Fullest vmstorage PVC is 85.0% used"
       },
       "startsAt": "2026-11-27T09:00:00Z",
       "endsAt": "0001-01-01T00:00:00Z",
@@ -24,14 +24,14 @@
       "dashboardURL": "",
       "panelURL": "",
       "values": {
-        "A": 91.2,
-        "B": 91.2
+        "A": 85.0,
+        "B": 85.0
       },
-      "valueString": "[ var='B' labels={namespace=monitoring} value=91.2 ]"
+      "valueString": "[ var='B' labels={namespace=monitoring} value=85.0 ]"
     }
   ],
   "groupLabels": {
-    "alertname": "VmstorageHighCpu"
+    "alertname": "VmstorageDiskFilling"
   },
   "commonLabels": {},
   "commonAnnotations": {},
@@ -41,5 +41,5 @@
   "truncatedAlerts": 0,
   "title": "[FIRING:1] vmstorage",
   "state": "alerting",
-  "message": "vmstorage pressure"
+  "message": "vmstorage disk filling"
 }

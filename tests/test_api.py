@@ -4,10 +4,12 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app.adapters.argocd_fake import FakeDeploymentSyncer
+from app.adapters.argocd_fake import FakeArgoCdSyncer
 from app.adapters.gitops_fake import FakeGitOpsBackend
-from app.config import Settings
+from app.config import Settings, load_app_config
+from app.container import build_container
 from app.main import create_app
+from app.observability import Metrics
 from tests.conftest import ROOT, load_fixture
 from tests.factories import TARGET_KEY, state
 
@@ -33,7 +35,7 @@ def gitops() -> FakeGitOpsBackend:
 
 @pytest.fixture
 def client(gitops: FakeGitOpsBackend) -> Iterator[TestClient]:
-    app = create_app(make_settings(), gitops=gitops, syncer=FakeDeploymentSyncer())
+    app = create_app(make_settings(), gitops=gitops, syncer=FakeArgoCdSyncer())
     with TestClient(app) as test_client:
         yield test_client
 
@@ -53,14 +55,15 @@ def test_unauthenticated_bad_body_still_401(client: TestClient) -> None:
 
 def test_dry_run_webhook_returns_decision(client: TestClient, gitops: FakeGitOpsBackend) -> None:
     response = client.post(
-        "/webhook/grafana", json=load_fixture("grafana_firing_cpu.json"), headers=AUTH
+        "/webhook/grafana", json=load_fixture("grafana_firing_storage.json"), headers=AUTH
     )
     assert response.status_code == 202
     body = response.json()
     assert body["mode"] == "dry_run"
     [decision] = body["decisions"]
     assert decision["decision"] == "dry_run"
-    assert (decision["old"], decision["new"]) == ("4", "5")
+    assert decision["resource"] == "storage"
+    assert (decision["old"], decision["new"]) == ("30Gi", "36Gi")
     assert gitops.applied == []
 
 
@@ -93,7 +96,7 @@ def test_metrics_exposes_counters(client: TestClient) -> None:
     assert 'vm_autoscaler_alerts_received_total{status="resolved"} 1.0' in text
     assert "vm_autoscaler_decisions_total{" in text
     assert "vm_autoscaler_handle_duration_seconds_count 1.0" in text
-    assert "vm_autoscaler_unknown_targets_total 1.0" in text  # region-b is not configured
+    assert "vm_autoscaler_unknown_targets_total 1.0" in text  # ocp-unknown is not configured
 
 
 def test_health_and_ready(client: TestClient) -> None:
@@ -112,6 +115,68 @@ def test_bad_config_fails_at_startup(tmp_path: Path) -> None:
 
 def test_settings_require_urls_for_real_adapters() -> None:
     with pytest.raises(ValueError, match="GITOPS_API_URL"):
-        Settings(webhook_token="x", gitops_backend="internal", argocd_sync_method="fake")
+        Settings(
+            webhook_token="test-webhook-token-0001",
+            gitops_backend="internal",
+            argocd_sync_method="fake",
+        )
     with pytest.raises(ValueError, match="ARGOCD_URL"):
-        Settings(webhook_token="x", gitops_backend="fake", argocd_sync_method="api")
+        Settings(
+            webhook_token="test-webhook-token-0001", gitops_backend="fake", argocd_sync_method="api"
+        )
+
+
+def test_bearer_with_empty_token_is_401(client: TestClient) -> None:
+    for header in ("Bearer ", "Bearer", "Bearer    "):
+        response = client.post("/webhook/grafana", json={}, headers={"Authorization": header})
+        assert response.status_code == 401
+
+
+@pytest.mark.parametrize("token", ["", "   ", "short-token"])
+def test_weak_webhook_token_rejected_at_startup(token: str) -> None:
+    with pytest.raises(ValueError, match="WEBHOOK_TOKEN must be at least 16 characters"):
+        Settings(webhook_token=token, gitops_backend="fake", argocd_sync_method="fake")
+
+
+def test_mixed_batch_storage_decided_cpu_ignored(client: TestClient) -> None:
+    payload = load_fixture("grafana_firing_storage.json")
+    leftover = {**payload["alerts"][0], "fingerprint": "old-cpu-rule"}
+    leftover["labels"] = {**leftover["labels"], "resource": "cpu"}
+    payload["alerts"].append(leftover)
+    response = client.post("/webhook/grafana", json=payload, headers=AUTH)
+    assert response.status_code == 202
+    body = response.json()
+    assert [d["resource"] for d in body["decisions"]] == ["storage"]
+    assert body["ignored"] == [
+        {"fingerprint": "old-cpu-rule", "status": "firing", "reason": "unsupported_resource"}
+    ]
+    metrics = client.get("/metrics").text
+    assert 'vm_autoscaler_alerts_ignored_total{reason="unsupported_resource"} 1.0' in metrics
+
+
+def test_resolved_alerts_are_counted_as_ignored(client: TestClient) -> None:
+    client.post("/webhook/grafana", json=load_fixture("grafana_resolved.json"), headers=AUTH)
+    metrics = client.get("/metrics").text
+    assert 'vm_autoscaler_alerts_ignored_total{reason="resolved"} 1.0' in metrics
+
+
+@pytest.mark.parametrize(
+    ("backend", "flag", "expected"),
+    [("internal", False, False), ("internal", True, True), ("fake", False, True)],
+)
+async def test_stores_annotations_flag_only_applies_to_internal(
+    backend: str, flag: bool, expected: bool
+) -> None:
+    settings = Settings(
+        webhook_token=TOKEN,
+        config_path=ROOT / "config.example.yaml",
+        gitops_backend=backend,  # type: ignore[arg-type]
+        gitops_api_url="https://gitops.test",
+        gitops_stores_annotations=flag,
+        argocd_sync_method="fake",
+    )
+    container = build_container(settings, load_app_config(settings.config_path), Metrics())
+    try:
+        assert container.service._annotations_supported is expected
+    finally:
+        await container.close()

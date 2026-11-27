@@ -1,0 +1,28 @@
+# VictoriaMetrics cluster values for ocp-prod-region-a / monitoring.
+# Managed by Argo CD - edit through merge requests.
+
+vmstorage:
+  replicaCount: 3
+  retentionPeriod: "12"   # months
+  pvc:
+    storageClassName: fast-ssd
+    size: 30Gi   # grown by vm-autoscaler
+  resources:
+    limits:
+      cpu: "4"
+      memory: 16Gi
+  tolerations:
+    - key: dedicated
+      operator: Equal
+      value: monitoring
+      effect: NoSchedule
+
+vmselect:
+  replicaCount: 2
+  pvc:
+    size: 10Gi   # cache, NOT touched
+
+vminsert:
+  replicaCount: 2
+  extraArgs:
+    maxLabelsPerTimeseries: "40"

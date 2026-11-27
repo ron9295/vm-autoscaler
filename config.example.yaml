@@ -1,4 +1,5 @@
 # vm-autoscaler configuration. Mounted from a ConfigMap at /etc/vm-autoscaler/config.yaml.
+# Scope: vmstorage PVC size only.
 #
 # mode: the global delivery mode. A policy may only make it *safer*, never less safe:
 #   dry_run        - compute and log the change, touch nothing (start here)
@@ -8,7 +9,7 @@ mode: dry_run
 
 change_reason_prefix: "[vm-autoscaler]"
 
-# Only these components are acted on. vmselect/vminsert can be added later.
+# Only these components are acted on.
 enabled_components: [vmstorage]
 
 # Skip direct commits while the Argo app is Progressing, Degraded or already syncing.
@@ -17,58 +18,50 @@ argocd_precheck: true
 defaults:
   value_ref_id: "B"           # which Grafana query refId holds the usage percent
 
-# Used when GITOPS_BACKEND=gitlab.
+# GITOPS_BACKEND=gitlab. Repo layout (default branch main):
+#   <ocp_cluster>/<namespace>/<values file>     with   vmstorage:
+#                                                         pvc:
+#                                                           size: 30Gi
 gitlab:
+  project: TODO/group/repo                       # TODO: GitLab project path or numeric id
+  branch: main
+  file_template: "{ocp_cluster}/{namespace}/TODO_VALUES_FILE.yaml"   # TODO: real file name
+  storage_path: vmstorage.pvc.size
   author_name: vm-autoscaler
   author_email: vm-autoscaler@example.local
-  commit_message_prefix: "[vm-autoscaler]"   # if set, replaces change_reason_prefix
+  commit_message_prefix: "[vm-autoscaler]"       # if set, replaces change_reason_prefix
   cooldown_source: commits    # commits: last-scaled time from Git history (default)
-                              # annotations: vm-autoscaler/last-scaled-* in the manifest
+                              # annotations: written into the values file at annotations_path
 
 policies:
-  cpu:
-    trigger_percent: 80
-    step_percent: 25
-    max: "16"
-    cooldown: 6h
-    scale_requests_with_limits: true
-  memory:
-    trigger_percent: 80
-    step_percent: 25
-    max: "64Gi"
-    cooldown: 6h
-    requests_equal_limits: true     # avoid OOM surprises for a stateful DB
   storage:
     trigger_percent: 80
     step_percent: 20
     max: "2Ti"
     cooldown: 24h
-  replicas:
-    trigger_percent: 85
-    step: 1
-    max: 20
-    cooldown: 24h
-    mode: merge_request             # never direct-commit replica changes
 
+# One entry per <ocp_cluster>/<namespace> directory to manage. ocp_cluster and namespace
+# must match the Grafana alert labels AND the directory names in the repo.
 targets:
   - ocp_cluster: ocp-prod-region-a
     namespace: monitoring
     component: vmstorage
-    argocd_app: victoria-metrics-region-a
-    argocd_sync_resources:          # sync only this object, not the whole app
+    argocd_app: victoria-metrics-region-a      # TODO
+    argocd_sync_resources:                     # sync only this object, not the whole app
       - group: operator.victoriametrics.com
         kind: VMCluster
-        name: vm-main
+        name: vm-main                          # TODO
         namespace: monitoring
-    storage_expansion_supported: true   # StorageClass has allowVolumeExpansion: true
-    gitops_ref: {}                  # TODO(api): extra identifiers our backend needs. Passed through as-is.
-    gitlab:                         # required when GITOPS_BACKEND=gitlab
-      project: infra/monitoring     # path or numeric id
-      branch: main
-      file: clusters/region-a/vmcluster.yaml
-      document_kind: VMCluster      # null for a Helm values file
-      document_name: vm-main
-      yaml_root: spec.vmstorage     # e.g. "vmstorage" for a Helm values file
-      # annotations_path: metadata.annotations   # cooldown timestamps; relative to the document root
-    # optional overrides:
-    # policies: { cpu: { max: "24" } }
+    storage_expansion_supported: true          # StorageClass has allowVolumeExpansion: true
+    # optional: gitlab: { file: other/path.yaml }   # per-target override of the template
+    # optional: policies: { storage: { max: "4Ti" } }
+  - ocp_cluster: ocp-prod-region-b
+    namespace: monitoring
+    component: vmstorage
+    argocd_app: victoria-metrics-region-b      # TODO
+    argocd_sync_resources:
+      - group: operator.victoriametrics.com
+        kind: VMCluster
+        name: vm-main                          # TODO
+        namespace: monitoring
+    storage_expansion_supported: true

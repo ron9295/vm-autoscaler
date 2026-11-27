@@ -22,14 +22,8 @@ from typing import Any, TypeVar
 
 import httpx
 from pydantic import BaseModel, ConfigDict, ValidationError
-from tenacity import (
-    AsyncRetrying,
-    retry_if_exception_type,
-    stop_after_attempt,
-    wait_exponential_jitter,
-)
 
-from app.adapters.http_common import truncate
+from app.adapters.http_common import send_with_retries, truncate
 from app.domain.errors import (
     GitOpsConflictError,
     GitOpsError,
@@ -50,23 +44,8 @@ _PATH_STATE = "/TODO/components"
 _PATH_APPLY = "/TODO/components/changes"
 _PATH_CHANGE_REQUEST = "/TODO/change-requests"
 
-# Errors where the request was never sent, so even a write is safe to retry.
-_NOT_SENT_ERRORS: tuple[type[Exception], ...] = (
-    httpx.ConnectError,
-    httpx.ConnectTimeout,
-    httpx.PoolTimeout,
-)
 
-
-class _ServerError(Exception):
-    """Internal marker: the backend answered with a 5xx (retryable for GET only)."""
-
-    def __init__(self, response: httpx.Response) -> None:
-        self.response = response
-        super().__init__(f"HTTP {response.status_code}")
-
-
-class InternalGitOpsClient:
+class InternalGitOpsBackend:
     """HTTP client for the internal backend that edits the Argo CD source repo.
 
     TODO(api): paths and payloads below are placeholders. Update the
@@ -181,8 +160,15 @@ class InternalGitOpsClient:
         status: int | None = None
         result = "success"
         try:
-            response, attempts = await self._send_with_retries(
-                method, path, params=params, json=json, headers=headers
+            response, attempts = await send_with_retries(
+                self._http,
+                method,
+                path,
+                max_retries=self._max_retries,
+                retry_wait=self._retry_wait,
+                params=params,
+                json=json,
+                headers=headers,
             )
             status = response.status_code
             _raise_for_status(response)
@@ -208,42 +194,6 @@ class InternalGitOpsClient:
                     }
                 },
             )
-
-    async def _send_with_retries(
-        self, method: str, path: str, **kwargs: Any
-    ) -> tuple[httpx.Response, int]:
-        """Send with tenacity. Returns (response, attempts). Raises GitOpsUnavailableError."""
-        is_read = method == "GET"
-        retry_on: tuple[type[Exception], ...] = (
-            (httpx.TransportError, _ServerError) if is_read else _NOT_SENT_ERRORS
-        )
-        attempts = 0
-        retrying = AsyncRetrying(
-            stop=stop_after_attempt(self._max_retries + 1),
-            wait=wait_exponential_jitter(
-                initial=self._retry_wait, max=self._retry_wait * 20, jitter=self._retry_wait
-            ),
-            retry=retry_if_exception_type(retry_on),
-            reraise=True,
-        )
-        try:
-            async for attempt in retrying:
-                with attempt:
-                    attempts += 1
-                    response = await self._http.request(method, path, **kwargs)
-                    if response.status_code >= 500:
-                        raise _ServerError(response)
-                    return response, attempts
-        except _ServerError as exc:
-            raise GitOpsUnavailableError(
-                f"{method} {path}: HTTP {exc.response.status_code} after {attempts} attempt(s): "
-                f"{truncate(exc.response.text)}"
-            ) from exc
-        except httpx.TransportError as exc:  # includes all timeouts
-            raise GitOpsUnavailableError(
-                f"{method} {path}: {type(exc).__name__} after {attempts} attempt(s)"
-            ) from exc
-        raise GitOpsUnavailableError(f"{method} {path}: no attempt made")  # pragma: no cover
 
 
 def _map_body(operation: str, mapper: Callable[[Any], T], body: Any) -> T:
@@ -301,24 +251,14 @@ def _to_state_params(target: Target) -> dict[str, str]:
     return params
 
 
-class _RequestLimitWire(BaseModel):
-    model_config = ConfigDict(extra="ignore")
-    request: str | None = None
-    limit: str | None = None
-
-
 class _StateResponseWire(BaseModel):
     """TODO(api): placeholder response shape for GET component state:
 
-    {"cpu": {"request": "2", "limit": "4"}, "memory": {"request": "16Gi", "limit": "16Gi"},
-     "storage": "500Gi", "replicas": 3, "annotations": {...}, "version": "<commit sha>"}
+    {"storage": "30Gi", "annotations": {...}, "version": "<commit sha>"}
     """
 
     model_config = ConfigDict(extra="ignore")
-    cpu: _RequestLimitWire = _RequestLimitWire()
-    memory: _RequestLimitWire = _RequestLimitWire()
     storage: str | None = None
-    replicas: int | None = None
     annotations: dict[str, str] = {}
     version: str | None = None
 
@@ -327,12 +267,7 @@ def _from_state_response(body: Any) -> ComponentState:
     """TODO(api): map the GET response to ComponentState."""
     wire = _StateResponseWire.model_validate(body)
     return ComponentState(
-        cpu_request=wire.cpu.request,
-        cpu_limit=wire.cpu.limit,
-        memory_request=wire.memory.request,
-        memory_limit=wire.memory.limit,
         storage=wire.storage,
-        replicas=wire.replicas,
         annotations=wire.annotations,
         version=wire.version,
     )

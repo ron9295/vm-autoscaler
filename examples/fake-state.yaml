@@ -1,13 +1,16 @@
 # Seed for FakeGitOpsBackend (GITOPS_BACKEND=fake). Used by `make run`.
+# One entry per target in config.example.yaml.
 - ocp_cluster: ocp-prod-region-a
   namespace: monitoring
   component: vmstorage
   state:
-    cpu_request: "2"
-    cpu_limit: "4"
-    memory_request: "16Gi"
-    memory_limit: "16Gi"
-    storage: "500Gi"
-    replicas: 3
+    storage: "30Gi"
+    annotations: {}
+    version: "v1"
+- ocp_cluster: ocp-prod-region-b
+  namespace: monitoring
+  component: vmstorage
+  state:
+    storage: "30Gi"
     annotations: {}
     version: "v1"

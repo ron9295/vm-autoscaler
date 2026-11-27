@@ -13,10 +13,10 @@ from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from pydantic import ValidationError
 
 from app.api.deps import ContainerDep
+from app.api.grafana_webhook import GrafanaWebhook, parse_webhook
 from app.api.security import verify_webhook_token
 from app.domain.errors import AlertParseError
 from app.observability import request_id_var
-from app.services.alert_parser import GrafanaWebhook, parse_webhook
 
 logger = logging.getLogger(__name__)
 
@@ -44,6 +44,8 @@ async def grafana_webhook(request: Request, container: ContainerDep) -> dict[str
             parsed = parse_webhook(payload, container.config.defaults.value_ref_id)
         except AlertParseError as exc:
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, str(exc)) from exc
+        for ignored in parsed.ignored:
+            container.metrics.alerts_ignored.labels(reason=ignored.reason).inc()
         decisions = await container.service.handle(parsed)
         return {
             "request_id": request_id,

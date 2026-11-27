@@ -5,6 +5,9 @@
 #   --build-arg PIP_INDEX_URL=https://pypi-mirror.internal/simple
 # Dependencies are pinned *with hashes* in requirements.txt (--require-hashes).
 
+# For repeatable (and air-gapped) builds, pin the base image by digest from your registry:
+#   --build-arg BASE_IMAGE=registry.access.redhat.com/ubi9/python-312@sha256:<digest>
+# (find it with: skopeo inspect docker://registry.access.redhat.com/ubi9/python-312:latest)
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312:latest
 
 # ---------- build stage: create a venv with pinned dependencies ----------

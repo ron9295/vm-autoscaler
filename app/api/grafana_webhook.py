@@ -1,6 +1,10 @@
 """Turn a Grafana Unified Alerting webhook payload into `ScaleRequest`s.
 
 Only the fields we need are modelled; everything else Grafana sends is allowed and ignored.
+The only supported `resource` label value is "storage" (vmstorage PVC size). Firing alerts
+for any other resource (e.g. cpu/memory left over from old alert rules) are ignored one by
+one with reason "unsupported_resource", so they never block a storage alert in the same
+webhook. A firing alert missing a required label is still rejected (HTTP 422).
 """
 
 from __future__ import annotations
@@ -23,6 +27,8 @@ logger = logging.getLogger(__name__)
 
 REQUIRED_LABELS = ("ocp_cluster", "namespace", "component", "resource")
 AUTOSCALE_LABEL = "autoscale"
+IGNORED_RESOLVED = "resolved"
+IGNORED_UNSUPPORTED_RESOURCE = "unsupported_resource"
 
 
 class GrafanaAlert(BaseModel):
@@ -58,27 +64,49 @@ def parse_webhook(payload: GrafanaWebhook, value_ref_id: str) -> ParsedWebhook:
                 extra={"fields": {"fingerprint": alert.fingerprint, "status": alert.status}},
             )
             ignored.append(
-                IgnoredAlert(fingerprint=alert.fingerprint, status=alert.status, reason="resolved")
+                IgnoredAlert(
+                    fingerprint=alert.fingerprint, status=alert.status, reason=IGNORED_RESOLVED
+                )
+            )
+            continue
+        _check_required_labels(alert)
+        resource = alert.labels["resource"]
+        if resource not in get_args(ResourceName):
+            logger.warning(
+                "ignoring alert for unsupported resource; remove or fix its alert rule",
+                extra={
+                    "fields": {
+                        "fingerprint": alert.fingerprint,
+                        "resource": resource,
+                        "supported": list(get_args(ResourceName)),
+                    }
+                },
+            )
+            ignored.append(
+                IgnoredAlert(
+                    fingerprint=alert.fingerprint,
+                    status=alert.status,
+                    reason=IGNORED_UNSUPPORTED_RESOURCE,
+                )
             )
             continue
         requests.append(_to_scale_request(alert, value_ref_id))
     return ParsedWebhook(requests=requests, ignored=ignored)
 
 
-def _to_scale_request(alert: GrafanaAlert, value_ref_id: str) -> ScaleRequest:
-    labels = alert.labels
+def _check_required_labels(alert: GrafanaAlert) -> None:
     for name in REQUIRED_LABELS:
-        if not labels.get(name):
+        if not alert.labels.get(name):
             raise AlertParseError(
                 f"alert {alert.fingerprint or '<no fingerprint>'} is missing required label "
                 f"'{name}'"
             )
+
+
+def _to_scale_request(alert: GrafanaAlert, value_ref_id: str) -> ScaleRequest:
+    """Build a ScaleRequest from a firing alert whose labels were already checked."""
+    labels = alert.labels
     resource = labels["resource"]
-    if resource not in get_args(ResourceName):
-        raise AlertParseError(
-            f"alert {alert.fingerprint}: label 'resource' must be one of "
-            f"{list(get_args(ResourceName))}, got {resource!r}"
-        )
     return ScaleRequest(
         fingerprint=alert.fingerprint,
         alert_name=labels.get("alertname", ""),
@@ -103,11 +131,3 @@ def extract_value(values: dict[str, Any] | None, ref_id: str) -> float | None:
         if isinstance(value, int | float) and not isinstance(value, bool):
             return float(value)
     return None
-
-
-def group_by_target(requests: list[ScaleRequest]) -> dict[TargetKey, list[ScaleRequest]]:
-    """Group requests so all resources of one target end up in one commit and one sync."""
-    groups: dict[TargetKey, list[ScaleRequest]] = {}
-    for request in requests:
-        groups.setdefault(request.target_key, []).append(request)
-    return groups

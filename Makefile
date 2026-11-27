@@ -39,7 +39,7 @@ check: lint typecheck test
 
 # Local run: fake GitOps backend seeded from examples/, fake Argo, dry_run config.
 run:
-	WEBHOOK_TOKEN=dev-token \
+	WEBHOOK_TOKEN=dev-webhook-token-local \
 	CONFIG_PATH=config.example.yaml \
 	GITOPS_BACKEND=fake \
 	GITOPS_FAKE_SEED_PATH=examples/fake-state.yaml \
@@ -47,12 +47,12 @@ run:
 	LOG_LEVEL=INFO \
 	$(BIN)/uvicorn app.main:create_app --factory --host 127.0.0.1 --port $(PORT)
 
-# Send the sample firing CPU alert to a running `make run`.
+# Send the sample firing storage alert to a running `make run`.
 sample:
 	curl -sS -X POST http://127.0.0.1:$(PORT)/webhook/grafana \
-	  -H 'Authorization: Bearer dev-token' \
+	  -H 'Authorization: Bearer dev-webhook-token-local' \
 	  -H 'Content-Type: application/json' \
-	  --data @tests/fixtures/grafana_firing_cpu.json | $(BIN)/python -m json.tool
+	  --data @tests/fixtures/grafana_firing_storage.json | $(BIN)/python -m json.tool
 
 image:
 	$(ENGINE) build -t $(IMAGE) .

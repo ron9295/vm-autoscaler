@@ -6,48 +6,21 @@
     {
       "status": "firing",
       "labels": {
-        "alertname": "VmstorageHighCpu",
+        "alertname": "VmstorageDiskFilling",
         "ocp_cluster": "ocp-prod-region-a",
         "namespace": "monitoring",
         "component": "vmstorage",
-        "resource": "cpu",
+        "resource": "storage",
         "autoscale": "true",
         "grafana_folder": "VictoriaMetrics"
       },
       "annotations": {
-        "summary": "vmstorage cpu usage is 91.2%"
+        "summary": "Fullest vmstorage PVC is 85.0% used"
       },
       "startsAt": "2026-11-27T09:00:00Z",
       "endsAt": "0001-01-01T00:00:00Z",
       "generatorURL": "https://grafana.example.internal/alerting/grafana/abc/view",
       "fingerprint": "a1b2c3d4e5f60001",
-      "silenceURL": "https://grafana.example.internal/alerting/silence/new",
-      "dashboardURL": "",
-      "panelURL": "",
-      "values": {
-        "A": 91.2,
-        "B": 91.2
-      },
-      "valueString": "[ var='B' labels={namespace=monitoring} value=91.2 ]"
-    },
-    {
-      "status": "firing",
-      "labels": {
-        "alertname": "VmstorageHighMemory",
-        "ocp_cluster": "ocp-prod-region-a",
-        "namespace": "monitoring",
-        "component": "vmstorage",
-        "resource": "memory",
-        "autoscale": "true",
-        "grafana_folder": "VictoriaMetrics"
-      },
-      "annotations": {
-        "summary": "vmstorage memory usage is 85.0%"
-      },
-      "startsAt": "2026-11-27T09:00:00Z",
-      "endsAt": "0001-01-01T00:00:00Z",
-      "generatorURL": "https://grafana.example.internal/alerting/grafana/abc/view",
-      "fingerprint": "a1b2c3d4e5f60004",
       "silenceURL": "https://grafana.example.internal/alerting/silence/new",
       "dashboardURL": "",
       "panelURL": "",
@@ -60,7 +33,7 @@
     {
       "status": "firing",
       "labels": {
-        "alertname": "VmstorageHighStorage",
+        "alertname": "VmstorageDiskFilling",
         "ocp_cluster": "ocp-prod-region-b",
         "namespace": "monitoring",
         "component": "vmstorage",
@@ -69,12 +42,12 @@
         "grafana_folder": "VictoriaMetrics"
       },
       "annotations": {
-        "summary": "vmstorage storage usage is 82.5%"
+        "summary": "Fullest vmstorage PVC is 82.5% used"
       },
       "startsAt": "2026-11-27T09:00:00Z",
       "endsAt": "0001-01-01T00:00:00Z",
       "generatorURL": "https://grafana.example.internal/alerting/grafana/abc/view",
-      "fingerprint": "a1b2c3d4e5f60005",
+      "fingerprint": "a1b2c3d4e5f60004",
       "silenceURL": "https://grafana.example.internal/alerting/silence/new",
       "dashboardURL": "",
       "panelURL": "",
@@ -85,18 +58,45 @@
       "valueString": "[ var='B' labels={namespace=monitoring} value=82.5 ]"
     },
     {
-      "status": "resolved",
+      "status": "firing",
       "labels": {
-        "alertname": "VmstorageHighCpu",
-        "ocp_cluster": "ocp-prod-region-a",
+        "alertname": "VmstorageDiskFilling",
+        "ocp_cluster": "ocp-unknown",
         "namespace": "monitoring",
         "component": "vmstorage",
-        "resource": "cpu",
+        "resource": "storage",
         "autoscale": "true",
         "grafana_folder": "VictoriaMetrics"
       },
       "annotations": {
-        "summary": "vmstorage cpu usage is 50.0%"
+        "summary": "Fullest vmstorage PVC is 90.0% used"
+      },
+      "startsAt": "2026-11-27T09:00:00Z",
+      "endsAt": "0001-01-01T00:00:00Z",
+      "generatorURL": "https://grafana.example.internal/alerting/grafana/abc/view",
+      "fingerprint": "a1b2c3d4e5f60005",
+      "silenceURL": "https://grafana.example.internal/alerting/silence/new",
+      "dashboardURL": "",
+      "panelURL": "",
+      "values": {
+        "A": 90.0,
+        "B": 90.0
+      },
+      "valueString": "[ var='B' labels={namespace=monitoring} value=90.0 ]"
+    },
+    {
+      "status": "resolved",
+      "labels": {
+        "alertname": "VmstorageDiskFilling",
+        "ocp_cluster": "ocp-prod-region-a",
+        "namespace": "monitoring",
+        "component": "vmstorage",
+        "resource": "storage",
+        "autoscale": "true",
+        "grafana_folder": "VictoriaMetrics"
+      },
+      "annotations": {
+        "summary": "Fullest vmstorage PVC is 50.0% used"
       },
       "startsAt": "2026-11-27T09:00:00Z",
       "endsAt": "2026-11-27T10:00:00Z",
@@ -113,7 +113,7 @@
     }
   ],
   "groupLabels": {
-    "alertname": "VmstorageHighCpu"
+    "alertname": "VmstorageDiskFilling"
   },
   "commonLabels": {},
   "commonAnnotations": {},
@@ -123,5 +123,5 @@
   "truncatedAlerts": 0,
   "title": "[FIRING:4] vmstorage",
   "state": "alerting",
-  "message": "vmstorage pressure"
+  "message": "vmstorage disk filling"
 }
