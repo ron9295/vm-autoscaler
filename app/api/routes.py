@@ -70,12 +70,14 @@ async def _read_payload(request: Request) -> GrafanaWebhook:
     try:
         raw = await request.json()
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "body is not valid JSON") from exc
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_CONTENT, "body is not valid JSON"
+        ) from exc
     try:
         return GrafanaWebhook.model_validate(raw)
     except ValidationError as exc:
         raise HTTPException(
-            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
             f"not a Grafana webhook payload: {exc.errors(include_url=False)}",
         ) from exc
 
