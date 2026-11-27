@@ -5,10 +5,14 @@
 #   --build-arg PIP_INDEX_URL=https://pypi-mirror.internal/simple
 # Dependencies are pinned *with hashes* in requirements.txt (--require-hashes).
 
-# For repeatable (and air-gapped) builds, pin the base image by digest from your registry:
-#   --build-arg BASE_IMAGE=registry.access.redhat.com/ubi9/python-312@sha256:<digest>
-# (find it with: skopeo inspect docker://registry.access.redhat.com/ubi9/python-312:latest)
-ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312:latest
+# Base image is pinned by tag AND digest (the digest is what is enforced; the tag is for humans).
+# Pinned: ubi9/python-312 1-1795522683 (a.k.a. 9.9-1795522683), manifest list resolved 2026-11-27.
+# To refresh: look up the newest tag/digest (skopeo inspect docker://registry.access.redhat.com/ubi9/python-312:latest,
+#   or `curl -sI -H 'Accept: application/vnd.docker.distribution.manifest.list.v2+json' \
+#    https://registry.access.redhat.com/v2/ubi9/python-312/manifests/latest` -> Docker-Content-Digest),
+# then update the default below. Air-gapped: mirror the image and override with
+#   --build-arg BASE_IMAGE=<your-registry>/ubi9/python-312@sha256:<digest>
+ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312:1-1795522683@sha256:5a0471c98fc10017d011c16b7615cd1d7f157d796f89eb4900ca0dc6c87384cf
 
 # ---------- build stage: create a venv with pinned dependencies ----------
 FROM ${BASE_IMAGE} AS build
