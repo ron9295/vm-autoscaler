@@ -42,10 +42,6 @@ class ArgoCdUnavailableError(ArgoCdError):
     """Argo CD could not be reached (connection error, timeout, 5xx)."""
 
 
-class AlertParseError(AutoscalerError):
-    """The Grafana payload is missing something we need (e.g. a required label)."""
-
-
 class ConfigError(AutoscalerError):
     """The YAML config file is invalid."""
 

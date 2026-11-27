@@ -10,7 +10,7 @@ from app.adapters.gitops_fake import FakeGitOpsBackend
 from app.config import Settings, load_app_config
 from app.container import build_container
 from app.domain.errors import ArgoCdUnavailableError, GitOpsUnavailableError
-from app.domain.models import AppStatus
+from app.domain.models import AppStatus, TargetKey
 from app.main import create_app
 from app.observability import Metrics
 from tests.conftest import ROOT, load_fixture
@@ -306,3 +306,35 @@ def test_argocd_timeout_accepts_the_old_name(monkeypatch: pytest.MonkeyPatch) ->
         monkeypatch, GITOPS_BACKEND="fake", HTTP_TIMEOUT_SECONDS="3", ARGOCD_TIMEOUT_SECONDS="5"
     )
     assert new.argocd_timeout_seconds == 5.0
+
+
+def test_resend_after_partial_503_does_not_resize_the_applied_target_twice(
+    tmp_path: Path, gitops: FakeGitOpsBackend
+) -> None:
+    region_b = TargetKey(
+        ocp_cluster="ocp-prod-region-b", namespace="monitoring", component="vmstorage"
+    )
+    gitops.seed(region_b, state())
+    gitops.fail_next("get_component_state", GitOpsUnavailableError("down"))  # region-a only
+    app = create_app(
+        make_settings(_direct_commit_config(tmp_path)), gitops=gitops, syncer=FakeArgoCdSyncer()
+    )
+    payload = load_fixture("grafana_multi.json")
+
+    def reasons(response: Response) -> dict[str, str]:
+        decisions = response.json()["decisions"]
+        return {
+            d["ocp_cluster"]: d["reason"] for d in decisions if d["ocp_cluster"] != "ocp-unknown"
+        }
+
+    with TestClient(app) as test_client:
+        first = test_client.post("/webhook/grafana", json=payload, headers=AUTH)
+        assert first.status_code == 503
+        assert reasons(first)["ocp-prod-region-a"] == "gitops_unavailable"
+        assert reasons(first)["ocp-prod-region-b"] == "scaled"
+
+        resend = test_client.post("/webhook/grafana", json=payload, headers=AUTH)
+        assert resend.status_code == 202
+        assert reasons(resend)["ocp-prod-region-a"] == "scaled"
+        assert reasons(resend)["ocp-prod-region-b"] == "cooldown_active"
+    assert len(gitops.applied) == 2

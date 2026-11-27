@@ -151,4 +151,8 @@ def extract_value(values: dict[str, Any] | None, ref_id: str) -> float | None:
     value = values[ref_id]
     if isinstance(value, int | float) and not isinstance(value, bool):
         return float(value)
+    logger.warning(
+        "alert value for the configured query ref_id is not a number",
+        extra={"fields": {"ref_id": ref_id, "value": repr(value)}},
+    )
     return None

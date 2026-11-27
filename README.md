@@ -452,6 +452,16 @@ hash-pinned packages in `requirements.txt`, and runs as UID 1001 / group 0 (work
 OpenShift's random UIDs). For air-gapped builds pass `--build-arg PIP_INDEX_URL=<mirror>`.
 At runtime the service makes no internet calls.
 
+* The base image is pinned by digest (`BASE_IMAGE` in the Dockerfile). To refresh it, read
+  the digest of `registry.access.redhat.com/ubi9/python-312:latest` (e.g. with
+  `skopeo inspect`) and update the default, or pass `--build-arg BASE_IMAGE=<mirror>@sha256:<digest>`.
+* For production, pin the image in `deploy/openshift/kustomization.yaml` with `digest:`
+  instead of `newTag`.
+* `route.yaml` ships with an intentionally invalid `ip_allowlist` placeholder; replace it
+  with Grafana's real egress CIDRs before enabling the Route.
+* CI (`.github/workflows/ci.yml`) runs ruff, mypy, the tests, `pip-audit` and an image
+  build. After `make lock`, re-run `pip-audit -r requirements.txt --no-deps --disable-pip`.
+
 ### Least privilege
 
 * **GitLab token** (`GITOPS_BACKEND=gitlab`): a project access token on the repo that holds
@@ -533,13 +543,13 @@ Metrics on `/metrics`:
 | `vm_autoscaler_argocd_sync_total` | `result` |
 | `vm_autoscaler_handle_duration_seconds` | – |
 
-Response codes of `/webhook/grafana`: `202` normally; `503` (same body) if a decision is
-`gitops_unavailable` or `argocd_unavailable`, so Grafana retries; `401` bad token; `422` body
+Response codes of `/webhook/grafana`: `202` normally; `503` (same body) on a transient
+outage, see "Why the work is done inside the request"; `401` bad token; `422` body
 that is not valid JSON or not a Grafana webhook. An alert missing a required label is
 ignored on its own (`missing_label`, WARNING log), never a `422` for the batch.
 
 Decisions: `applied`, `change_request_opened`, `dry_run`, `skipped`. Skip reasons include
-`cooldown_active`, `at_max_cap`, `below_threshold`, `value_not_set`, `unknown_target`,
+`value_missing`, `cooldown_active`, `at_max_cap`, `below_threshold`, `value_not_set`, `unknown_target`,
 `deployment_not_healthy`, `gitops_conflict`, `gitops_unavailable`, `gitops_target_not_found`,
 `expansion_not_supported`, and `internal_error` (an unexpected bug while handling one target:
 logged at ERROR with a traceback; other targets in the same webhook are still handled). An
