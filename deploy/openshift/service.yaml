@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: vm-autoscaler
+spec:
+  selector:
+    app.kubernetes.io/name: vm-autoscaler
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+# Grafana in the same cluster calls:
+#   http://vm-autoscaler.vm-autoscaler.svc:8080/webhook/grafana

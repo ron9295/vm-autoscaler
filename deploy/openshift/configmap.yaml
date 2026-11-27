@@ -1,0 +1,90 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vm-autoscaler-env
+data:
+  # gitlab   = edit the Argo CD source repo through the GitLab API (current default)
+  # internal = our internal GitOps backend (switch back by changing only this value)
+  GITOPS_BACKEND: "gitlab"
+  GITLAB_URL: "https://gitlab.internal.example"               # TODO: your GitLab URL
+  GITOPS_API_URL: "https://gitops-backend.internal.example"   # TODO: internal GitOps backend URL
+  GITOPS_API_TIMEOUT_SECONDS: "10"     # also used for GitLab
+  GITOPS_API_MAX_RETRIES: "3"          # also used for GitLab (GET only)
+  GITOPS_STORES_ANNOTATIONS: "true"                            # TODO(api): false until supported
+  ARGOCD_URL: "https://openshift-gitops-server.openshift-gitops.svc"  # TODO: Argo CD API URL
+  ARGOCD_SYNC_METHOD: "api"
+  ARGOCD_INSECURE_SKIP_VERIFY: "false"
+  CA_BUNDLE_PATH: "/etc/pki/internal-ca/ca-bundle.crt"
+  CONFIG_PATH: "/etc/vm-autoscaler/config.yaml"
+  LOG_LEVEL: "INFO"
+  HTTP_TIMEOUT_SECONDS: "10"
+  READINESS_CHECK_DEPENDENCIES: "false"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vm-autoscaler-config
+data:
+  config.yaml: |
+    mode: dry_run            # dry_run -> merge_request -> direct_commit (see README "Rollout")
+    change_reason_prefix: "[vm-autoscaler]"
+    enabled_components: [vmstorage]
+    argocd_precheck: true
+    defaults:
+      value_ref_id: "B"
+    gitlab:
+      author_name: vm-autoscaler
+      author_email: vm-autoscaler@example.local    # TODO
+      commit_message_prefix: "[vm-autoscaler]"
+      cooldown_source: commits     # last-scaled time from Git history; nothing in the manifest
+    policies:
+      cpu:
+        trigger_percent: 80
+        step_percent: 25
+        max: "16"
+        cooldown: 6h
+        scale_requests_with_limits: true
+      memory:
+        trigger_percent: 80
+        step_percent: 25
+        max: "64Gi"
+        cooldown: 6h
+        requests_equal_limits: true
+      storage:
+        trigger_percent: 80
+        step_percent: 20
+        max: "2Ti"
+        cooldown: 24h
+      replicas:
+        trigger_percent: 85
+        step: 1
+        max: 20
+        cooldown: 24h
+        mode: merge_request
+    targets:
+      - ocp_cluster: ocp-prod-region-a
+        namespace: monitoring
+        component: vmstorage
+        argocd_app: victoria-metrics-region-a
+        argocd_sync_resources:
+          - group: operator.victoriametrics.com
+            kind: VMCluster
+            name: vm-main
+            namespace: monitoring
+        storage_expansion_supported: true
+        gitops_ref: {}       # TODO(api)
+        gitlab:
+          project: infra/monitoring                 # TODO: path or numeric id
+          branch: main
+          file: clusters/region-a/vmcluster.yaml    # TODO
+          document_kind: VMCluster
+          document_name: vm-main
+          yaml_root: spec.vmstorage
+---
+# Internal CA bundle. On OpenShift you can let the cluster inject the trusted CA bundle:
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: vm-autoscaler-ca
+  labels:
+    config.openshift.io/inject-trusted-cabundle: "true"

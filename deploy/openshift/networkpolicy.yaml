@@ -1,0 +1,45 @@
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vm-autoscaler
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: vm-autoscaler
+  # Ingress only, so egress (GitLab, Argo CD) is not restricted. If your cluster enforces
+  # egress policies, add "Egress" here and allow, e.g.:
+  #   egress:
+  #     - to: [{ipBlock: {cidr: <GitLab IP>/32}}]          # GitLab API, port 443
+  #       ports: [{port: 443, protocol: TCP}]
+  #     - to: [{namespaceSelector: {matchLabels: {kubernetes.io/metadata.name: openshift-gitops}}}]
+  #     - to: [{namespaceSelector: {}, podSelector: {matchLabels: {dns.operator.openshift.io/daemonset-dns: default}}}]
+  #       ports: [{port: 5353, protocol: UDP}, {port: 5353, protocol: TCP}]
+  policyTypes: ["Ingress"]
+  ingress:
+    # Grafana (webhook). TODO: set the namespace Grafana runs in.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: grafana
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Prometheus / VictoriaMetrics scraping /metrics.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: openshift-user-workload-monitoring
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Uncomment when using route.yaml (traffic comes through the OpenShift router):
+    # - from:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           policy-group.network.openshift.io/ingress: ""
+    #   ports:
+    #     - port: 8080
+    #       protocol: TCP

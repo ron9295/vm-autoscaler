@@ -1,0 +1,28 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+namespace: vm-autoscaler
+
+labels:
+  - pairs:
+      app.kubernetes.io/name: vm-autoscaler
+      app.kubernetes.io/part-of: victoria-metrics
+    includeSelectors: false
+
+resources:
+  - configmap.yaml
+  # The real Secret is created out of band (sealed-secrets / Vault / oc create secret).
+  # secret.example.yaml documents its keys and is NOT applied.
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+  - servicemonitor.yaml
+  # Only if Grafana runs outside this cluster:
+  # - route.yaml
+  # Use instead of servicemonitor.yaml if you scrape with the VictoriaMetrics operator:
+  # - vmservicescrape.yaml
+
+images:
+  - name: vm-autoscaler
+    newName: image-registry.openshift-image-registry.svc:5000/vm-autoscaler/vm-autoscaler  # TODO: your registry
+    newTag: "0.1.0"

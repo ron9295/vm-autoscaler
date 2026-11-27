@@ -1,0 +1,18 @@
+# Only needed if Grafana runs OUTSIDE this cluster. Otherwise use the Service DNS name.
+# Also uncomment the router ingress rule in networkpolicy.yaml.
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: vm-autoscaler
+  annotations:
+    # Only allow Grafana's egress IPs (TODO: set them).
+    haproxy.router.openshift.io/ip_allowlist: "10.0.0.0/8"
+spec:
+  to:
+    kind: Service
+    name: vm-autoscaler
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
