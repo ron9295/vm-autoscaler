@@ -5,8 +5,10 @@ kind: Route
 metadata:
   name: vm-autoscaler
   annotations:
-    # Only allow Grafana's egress IPs (TODO: set them).
-    haproxy.router.openshift.io/ip_allowlist: "10.0.0.0/8"
+    # TODO: REQUIRED - replace with Grafana's real egress IPs/CIDRs, space-separated
+    # (e.g. "203.0.113.10/32 203.0.113.11/32"). This placeholder is deliberately NOT a valid
+    # CIDR, so it is not a working allowlist and is easy to spot in review. Do not apply as-is.
+    haproxy.router.openshift.io/ip_allowlist: "TODO-grafana-egress-ip/32"
 spec:
   to:
     kind: Service

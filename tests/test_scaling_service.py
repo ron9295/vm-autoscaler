@@ -267,7 +267,9 @@ async def test_expansion_not_supported_skips(app_config: AppConfig) -> None:
     [
         AppStatus(health="Progressing", sync="Synced"),
         AppStatus(health="Degraded", sync="Synced"),
-        AppStatus(health="Healthy", sync="OutOfSync", operation_in_progress=True),
+        AppStatus(health="Healthy", sync="Synced", operation_in_progress=True),
+        AppStatus(health="Healthy", sync="OutOfSync"),
+        AppStatus(health="Healthy", sync="Unknown"),
     ],
 )
 async def test_argo_unhealthy_skips(direct: Harness, status: AppStatus) -> None:

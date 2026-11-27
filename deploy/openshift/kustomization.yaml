@@ -29,6 +29,9 @@ resources:
   # Use instead of servicemonitor.yaml if you scrape with the VictoriaMetrics operator:
   # - vmservicescrape.yaml
 
+# Production: pin the image by digest instead of a mutable tag. Replace `newTag` with
+#   digest: sha256:<digest>      (get it from your registry after the build/push)
+# kustomize then renders <newName>@sha256:<digest>.
 images:
   - name: vm-autoscaler
     newName: image-registry.openshift-image-registry.svc:5000/vm-autoscaler/vm-autoscaler  # TODO: your registry

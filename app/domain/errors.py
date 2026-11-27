@@ -6,7 +6,7 @@ class AutoscalerError(Exception):
 
 
 class GitOpsError(AutoscalerError):
-    """Base class for errors talking to the internal GitOps backend."""
+    """Base class for errors talking to the GitOps backend (GitLab or internal)."""
 
 
 class GitOpsUnavailableError(GitOpsError):
@@ -14,15 +14,15 @@ class GitOpsUnavailableError(GitOpsError):
 
 
 class GitOpsConflictError(GitOpsError):
-    """409: someone else changed the component. The service re-reads once and retries."""
+    """The component changed since we read it (e.g. HTTP 409). Re-read once and retry."""
 
 
 class GitOpsNotFoundError(GitOpsError):
-    """404: the backend does not know this target."""
+    """The backend does not know this target (HTTP 404, or a missing project, file or path)."""
 
 
 class GitOpsRejectedError(GitOpsError):
-    """Any other 4xx. The message contains the status and a truncated response body."""
+    """Any other refusal (e.g. HTTP 4xx). The message has the status and a truncated body."""
 
     def __init__(self, status_code: int, body: str) -> None:
         self.status_code = status_code
@@ -40,10 +40,6 @@ class ArgoCdError(AutoscalerError):
 
 class ArgoCdUnavailableError(ArgoCdError):
     """Argo CD could not be reached (connection error, timeout, 5xx)."""
-
-
-class AlertParseError(AutoscalerError):
-    """The Grafana payload is missing something we need (e.g. a required label)."""
 
 
 class ConfigError(AutoscalerError):

@@ -9,7 +9,6 @@ import pytest
 import respx
 
 from app.adapters.gitops_gitlab import (
-    COOLDOWN_PREFIX,
     GitLabGitOpsBackend,
     last_scaled_from_commits,
     merge_newest,
@@ -17,7 +16,7 @@ from app.adapters.gitops_gitlab import (
 from app.adapters.yaml_edit import changed_lines
 from app.config import GitLabConfig, GitLabLocation
 from app.domain.errors import GitOpsResponseError
-from app.domain.models import ResourceChange
+from app.domain.models import COOLDOWN_ANNOTATION_PREFIX, ResourceChange
 from app.observability import Metrics
 from app.services.scaling_service import cooldown_annotation
 from tests.conftest import FIXTURES
@@ -79,7 +78,7 @@ def test_default_cooldown_source_is_commits() -> None:
 
 
 def test_prefix_matches_the_service_annotation_key() -> None:
-    assert f"{COOLDOWN_PREFIX}storage" == STORAGE
+    assert f"{COOLDOWN_ANNOTATION_PREFIX}storage" == STORAGE
 
 
 def test_finds_newest_matching_commit() -> None:

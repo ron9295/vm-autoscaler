@@ -71,7 +71,14 @@ from app.domain.errors import (
     GitOpsResponseError,
     GitOpsUnavailableError,
 )
-from app.domain.models import ChangeResult, ComponentState, ResourceChange, Target, TargetKey
+from app.domain.models import (
+    COOLDOWN_ANNOTATION_PREFIX,
+    ChangeResult,
+    ComponentState,
+    ResourceChange,
+    Target,
+    TargetKey,
+)
 from app.observability import Metrics
 
 logger = logging.getLogger(__name__)
@@ -82,7 +89,6 @@ AUTH_HINT = (
     "request mode needs Developer)"
 )
 BRANCH_PREFIX = "vm-autoscaler/"
-COOLDOWN_PREFIX = "vm-autoscaler/last-scaled-"  # same key the ScalingService reads
 HISTORY_PAGE_SIZE = 100
 MAX_HISTORY_PAGES = 10
 MR_PAGE_SIZE = 100
@@ -625,7 +631,9 @@ def last_scaled_from_commits(
                 if resource not in newest or when > newest[resource]:
                     newest[resource] = when
     return {
-        f"{COOLDOWN_PREFIX}{resource}": when.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        f"{COOLDOWN_ANNOTATION_PREFIX}{resource}": when.astimezone(UTC).strftime(
+            "%Y-%m-%dT%H:%M:%SZ"
+        )
         for resource, when in newest.items()
     }
 

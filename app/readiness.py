@@ -28,8 +28,8 @@ class ReadinessChecker:
     probes: dict[str, Callable[[], Awaitable[bool]]] = field(default_factory=dict)
     verify: ssl.SSLContext | bool = True
     transport: httpx.AsyncBaseTransport | None = None
-    _cached: dict[str, bool] | None = None
-    _cached_at: float = 0.0
+    _cached: dict[str, bool] | None = field(default=None, init=False, repr=False)
+    _cached_at: float = field(default=0.0, init=False, repr=False)
 
     async def check(self) -> dict[str, bool]:
         """Return {check name: ok}."""

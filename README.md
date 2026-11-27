@@ -87,11 +87,11 @@ Every rule below is implemented in `app/services/scaling_service.py` or
 | # | Rule | Why |
 |---|------|-----|
 | 1 | Only act if the alert label `autoscale="true"` and the component is in `enabled_components` (only `vmstorage`). | An explicit opt-in per alert rule. A missing label means "off". |
-| 2 | Only act if the value ≥ the policy's `trigger_percent`. | Protects against a misconfigured Grafana rule that fires too early. |
+| 2 | Only act if the value ≥ the policy's `trigger_percent`. The value is read only from the query `value_ref_id`; if it is absent or not a number the alert is skipped (`value_missing`) and a WARNING lists the available refIds. | Protects against a misconfigured Grafana rule that fires too early. |
 | 3 | **Cooldown** (24h by default). The last-scaled time comes from Git: in GitLab mode from the **commit history** of the values file (default), otherwise from an annotation `vm-autoscaler/last-scaled-storage` written with each change. | Gives the resize time to finish and show effect. Keeps the service stateless: no database, history lives in Git. Grafana re-sends firing alerts every `repeat_interval`; these are skipped. |
 | 4 | New size = current × (1 + step%), rounded up to whole Gi, capped at `max`. Already at max → skip `at_max_cap`, logged as **WARNING**. | Small, predictable steps. `at_max_cap` means a human must act (add vmstorage nodes, reduce retention). |
 | 5 | **Only increase. Storage never shrinks.** | A PVC cannot be shrunk; a smaller value in Git would only break the sync. |
-| 6 | **Argo pre-check:** skip if the app is not `Healthy` or a sync is already running (`deployment_not_healthy`). Configurable (`argocd_precheck`), on by default. | Don't stack a change on a cluster that is already changing or sick. |
+| 6 | **Argo pre-check:** skip if the app is not `Healthy` **and `Synced`**, or a sync is already running (`deployment_not_healthy`). Configurable (`argocd_precheck`), on by default. | Don't stack a change on a cluster that is already changing or sick. An `OutOfSync` app has an unrelated pending Git change that our targeted sync could roll out too. |
 | 7 | One change per target at a time (in-process lock). The Deployment runs **1 replica** with `Recreate`. | Two concurrent changes to the same target would conflict. |
 | 8 | Optimistic concurrency: the state's `version` (in GitLab: the file's `last_commit_id`) must still match when writing. On a conflict, re-read once and recompute; a second conflict skips (`gitops_conflict`). If the backend is unavailable, skip and **do not sync**. | Never overwrite someone else's change; never sync Argo without a confirmed commit. |
 | 9 | **Modes** (see below). | Lets you roll out from "watch only" to "fully automatic". |
@@ -166,13 +166,15 @@ repo directories and the Grafana labels), and make sure the GitLab token may pus
 |----------|---------|-------|
 | `WEBHOOK_TOKEN` | – (required) | Shared with the Grafana contact point. Secret. At least 16 characters (the service refuses to start otherwise); use `openssl rand -hex 32`. |
 | `CONFIG_PATH` | `/etc/vm-autoscaler/config.yaml` | |
-| `GITOPS_BACKEND` | `internal` | `gitlab` (set in the OpenShift ConfigMap), `internal`, or `fake` (in-memory, local only) |
+| `GITOPS_BACKEND` | – (required) | `gitlab` (set in the OpenShift ConfigMap), `internal`, or `fake` (in-memory, local only). The service refuses to start without it. |
 | `GITLAB_URL` | – | Required when `gitlab`, e.g. `https://gitlab.internal.example` |
 | `GITLAB_TOKEN` | – | Required when `gitlab`. Sent as `PRIVATE-TOKEN`. Secret. |
 | `GITOPS_API_URL` | – | Required when `internal` |
 | `GITOPS_API_TOKEN` | – | `internal` only. Sent as `Authorization: Bearer …`. Secret. |
-| `GITOPS_API_TIMEOUT_SECONDS` | `10` | Per request (internal backend and GitLab) |
-| `GITOPS_API_MAX_RETRIES` | `3` | Reads only (internal backend and GitLab) |
+| `GITLAB_TIMEOUT_SECONDS` | `GITOPS_API_TIMEOUT_SECONDS` | GitLab, per request. Unset: uses the `GITOPS_API_TIMEOUT_SECONDS` value |
+| `GITLAB_MAX_RETRIES` | `GITOPS_API_MAX_RETRIES` | GitLab, reads only. Unset: uses the `GITOPS_API_MAX_RETRIES` value |
+| `GITOPS_API_TIMEOUT_SECONDS` | `10` | Per request, internal backend (also the GitLab fallback, so old configs keep working) |
+| `GITOPS_API_MAX_RETRIES` | `3` | Reads only, internal backend (also the GitLab fallback) |
 | `GITOPS_STORES_ANNOTATIONS` | `true` | `internal` only: `false` → cooldowns in memory only (reset on restart; WARNING at startup) |
 | `GITOPS_FAKE_SEED_PATH` | – | YAML seed for the fake backend |
 | `ARGOCD_URL` | – | Required for `api`/`cli` |
@@ -181,8 +183,8 @@ repo directories and the Grafana labels), and make sure the GitLab token may pus
 | `ARGOCD_INSECURE_SKIP_VERIFY` | `false` | Avoid; use `CA_BUNDLE_PATH` |
 | `ARGOCD_CLI_PATH` | `argocd` | For `cli` |
 | `CA_BUNDLE_PATH` | – | Internal CA bundle for GitLab, the backend and Argo |
-| `HTTP_TIMEOUT_SECONDS` | `10` | Argo CD calls |
-| `READINESS_CHECK_DEPENDENCIES` | `false` | `/readyz` also checks the backend/Argo URLs (2s timeout, cached 60s) |
+| `ARGOCD_TIMEOUT_SECONDS` | `10` | Argo CD calls. The old name `HTTP_TIMEOUT_SECONDS` still works |
+| `READINESS_CHECK_DEPENDENCIES` | `false` | `/readyz` also checks the backend/Argo URLs and, in GitLab mode, that every project is readable (2s timeout, cached 60s). Off by default so a GitLab blip does not make the only pod unready |
 | `LOG_LEVEL` | `INFO` | |
 
 ---
@@ -225,7 +227,9 @@ are the same as for the internal backend.
   * A message that wrongly matches (e.g. a human `Revert "[vm-autoscaler] …"`) can only
     start a cooldown early, never cause an extra change.
   * **The commit title format is load-bearing.** If you change `change_reason_prefix`,
-    older commits stop matching and cooldowns expire early once.
+    older commits stop matching and cooldowns expire early once. It is the only prefix
+    setting; the old `gitlab.commit_message_prefix` still works (with a deprecation
+    warning) but a different value in both places is a startup error.
   * Check once in `dry_run` against your GitLab that a merged MR is seen (it should show
     `cooldown_active`). The GitLab docs don't spell out how `path` and `first_parent`
     combine for merge commits.
@@ -306,13 +310,13 @@ Rollouts, node drains and evictions all stop the pod with SIGTERM:
 3. **`terminationGracePeriodSeconds: 90`** — SIGKILL only after that.
 
 Worst case, one webhook can take a few minutes: every GitLab GET (file, commit history,
-re-read) is retried up to `GITOPS_API_MAX_RETRIES` times with a
-`GITOPS_API_TIMEOUT_SECONDS` timeout, plus the Argo status, refresh and sync calls. That
+re-read) is retried up to `GITLAB_MAX_RETRIES` times with a
+`GITLAB_TIMEOUT_SECONDS` timeout, plus the Argo status, refresh and sync calls. That
 only happens when GitLab or Argo is timing out. There is deliberately no hard time limit
 per webhook: cancelling in the middle of a GitLab write would leave it unknown whether the
 commit landed. The per-target lock, the re-read before writing, and the cooldown from Git
 history keep this safe; at worst Grafana sees a timeout and re-sends. To shorten it,
-lower `GITOPS_API_TIMEOUT_SECONDS` (e.g. 5) and `GITOPS_API_MAX_RETRIES` (e.g. 2).
+lower `GITLAB_TIMEOUT_SECONDS` (e.g. 5) and `GITLAB_MAX_RETRIES` (e.g. 2).
 
 A webhook that is still running after 80s is cancelled and Grafana gets an error, so it
 re-sends the alert. Because state lives in Git (commit history), nothing is lost and
@@ -334,8 +338,11 @@ decisions. This is the simpler correct choice:
   for completed work, or it re-sends the alert on its repeat interval.
 * Handling is idempotent (cooldown from Git + in-memory record + idempotency key), so a
   re-send after a timeout is harmless.
+* When any decision is `gitops_unavailable` or `argocd_unavailable` (a transient outage),
+  the handler returns `503` with the same JSON body, so Grafana re-sends the alert
+  promptly. Every other outcome, including other skips, is `202`.
 
-All calls have timeouts. Keep `GITOPS_API_TIMEOUT_SECONDS × (retries + 1)` plus Argo
+All calls have timeouts. Keep `GITLAB_TIMEOUT_SECONDS × (retries + 1)` plus Argo
 timeouts below the webhook timeout of your Grafana version.
 
 ---
@@ -418,8 +425,9 @@ oc -n vm-autoscaler exec deployment/vm-autoscaler -- \
   python -c "import urllib.request as u; print(u.urlopen('http://localhost:8080/readyz').read().decode())"
 ```
 
-`/readyz` must show `"gitlab_project:<project>": true`; `false` means the token or project
-path is wrong. Start with `mode: dry_run` and watch the decisions in the logs before moving
+`/readyz` only shows `"gitlab_project:<project>": true` when `READINESS_CHECK_DEPENDENCIES=true`;
+`false` means the token or project path is wrong (use it for the first rollout check, then
+leave it off so a GitLab blip does not make the only pod unready). Start with `mode: dry_run` and watch the decisions in the logs before moving
 on (see "Rollout plan").
 
 Config changes: edit the ConfigMap in `deploy/openshift/configmap.yaml`, run plan and apply
@@ -443,6 +451,16 @@ The image is built from `registry.access.redhat.com/ubi9/python-312`, installs o
 hash-pinned packages in `requirements.txt`, and runs as UID 1001 / group 0 (works with
 OpenShift's random UIDs). For air-gapped builds pass `--build-arg PIP_INDEX_URL=<mirror>`.
 At runtime the service makes no internet calls.
+
+* The base image is pinned by digest (`BASE_IMAGE` in the Dockerfile). To refresh it, read
+  the digest of `registry.access.redhat.com/ubi9/python-312:latest` (e.g. with
+  `skopeo inspect`) and update the default, or pass `--build-arg BASE_IMAGE=<mirror>@sha256:<digest>`.
+* For production, pin the image in `deploy/openshift/kustomization.yaml` with `digest:`
+  instead of `newTag`.
+* `route.yaml` ships with an intentionally invalid `ip_allowlist` placeholder; replace it
+  with Grafana's real egress CIDRs before enabling the Route.
+* CI (`.github/workflows/ci.yml`) runs ruff, mypy, the tests, `pip-audit` and an image
+  build. After `make lock`, re-run `pip-audit -r requirements.txt --no-deps --disable-pip`.
 
 ### Least privilege
 
@@ -517,7 +535,7 @@ Metrics on `/metrics`:
 | Metric | Labels |
 |--------|--------|
 | `vm_autoscaler_alerts_received_total` | `status` |
-| `vm_autoscaler_alerts_ignored_total` | `reason` (`resolved`, `unsupported_resource`) |
+| `vm_autoscaler_alerts_ignored_total` | `reason` (`resolved`, `unsupported_resource`, `missing_label`) |
 | `vm_autoscaler_decisions_total` | `ocp_cluster`, `resource`, `decision`, `reason` |
 | `vm_autoscaler_unknown_targets_total` | – |
 | `vm_autoscaler_gitops_requests_total` | `operation`, `result` |
@@ -525,8 +543,13 @@ Metrics on `/metrics`:
 | `vm_autoscaler_argocd_sync_total` | `result` |
 | `vm_autoscaler_handle_duration_seconds` | – |
 
+Response codes of `/webhook/grafana`: `202` normally; `503` (same body) on a transient
+outage, see "Why the work is done inside the request"; `401` bad token; `422` body
+that is not valid JSON or not a Grafana webhook. An alert missing a required label is
+ignored on its own (`missing_label`, WARNING log), never a `422` for the batch.
+
 Decisions: `applied`, `change_request_opened`, `dry_run`, `skipped`. Skip reasons include
-`cooldown_active`, `at_max_cap`, `below_threshold`, `value_not_set`, `unknown_target`,
+`value_missing`, `cooldown_active`, `at_max_cap`, `below_threshold`, `value_not_set`, `unknown_target`,
 `deployment_not_healthy`, `gitops_conflict`, `gitops_unavailable`, `gitops_target_not_found`,
 `expansion_not_supported`, and `internal_error` (an unexpected bug while handling one target:
 logged at ERROR with a traceback; other targets in the same webhook are still handled). An
@@ -546,6 +569,9 @@ sum by (ocp_cluster) (increase(vm_autoscaler_decisions_total{decision="applied"}
 
 # Errors talking to GitLab / Argo, or a bug
 increase(vm_autoscaler_decisions_total{reason=~"gitops_.*|argocd_.*|internal_error"}[1h]) > 0
+
+# Alert rules missing a required label (ocp_cluster/namespace/component/resource)
+increase(vm_autoscaler_alerts_ignored_total{reason="missing_label"}[1h]) > 0
 
 # Alert rules that send something other than storage (old cpu/memory/replica rules?)
 increase(vm_autoscaler_alerts_ignored_total{reason="unsupported_resource"}[1h]) > 0

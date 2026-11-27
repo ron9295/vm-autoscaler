@@ -3,13 +3,16 @@ kind: ConfigMap
 metadata:
   name: vm-autoscaler-env
 data:
+  # Required (the pod refuses to start without it):
   # gitlab   = edit the Argo CD source repo through the GitLab API (current default)
   # internal = our internal GitOps backend (switch back by changing only this value)
   GITOPS_BACKEND: "gitlab"
   GITLAB_URL: "https://gitlab.internal.example"               # TODO: your GitLab URL
   GITOPS_API_URL: "https://gitops-backend.internal.example"   # TODO: internal GitOps backend URL
-  GITOPS_API_TIMEOUT_SECONDS: "10"     # also used for GitLab
-  GITOPS_API_MAX_RETRIES: "3"          # also used for GitLab (GET only)
+  GITLAB_TIMEOUT_SECONDS: "10"         # unset: falls back to GITOPS_API_TIMEOUT_SECONDS
+  GITLAB_MAX_RETRIES: "3"              # GET only; unset: falls back to GITOPS_API_MAX_RETRIES
+  GITOPS_API_TIMEOUT_SECONDS: "10"     # internal backend (older configs also use it for GitLab)
+  GITOPS_API_MAX_RETRIES: "3"          # internal backend (older configs also use it for GitLab)
   GITOPS_STORES_ANNOTATIONS: "true"    # internal backend only; TODO(api): false until supported
   ARGOCD_URL: "https://openshift-gitops-server.openshift-gitops.svc"  # TODO: Argo CD API URL
   ARGOCD_SYNC_METHOD: "api"
@@ -17,7 +20,7 @@ data:
   CA_BUNDLE_PATH: "/etc/pki/internal-ca/ca-bundle.crt"
   CONFIG_PATH: "/etc/vm-autoscaler/config.yaml"
   LOG_LEVEL: "INFO"
-  HTTP_TIMEOUT_SECONDS: "10"
+  ARGOCD_TIMEOUT_SECONDS: "10"         # old name HTTP_TIMEOUT_SECONDS still works
   READINESS_CHECK_DEPENDENCIES: "false"
 ---
 apiVersion: v1
@@ -58,7 +61,6 @@ data:
       storage_path: vmstorage.pvc.size
       author_name: vm-autoscaler
       author_email: vm-autoscaler@example.local
-      commit_message_prefix: "[vm-autoscaler]"       # if set, replaces change_reason_prefix
       cooldown_source: commits    # commits: last-scaled time from Git history (default)
                                   # annotations: written into the values file at annotations_path
 

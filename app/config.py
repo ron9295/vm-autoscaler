@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 import re
 from datetime import timedelta
 from pathlib import Path
@@ -14,6 +15,7 @@ from typing import Annotated, Any, Literal
 
 import yaml
 from pydantic import (
+    AliasChoices,
     BaseModel,
     BeforeValidator,
     ConfigDict,
@@ -41,20 +43,25 @@ from app.domain.quantity import QuantityError, parse_bytes
 # --------------------------------------------------------------------------------------
 
 
+logger = logging.getLogger(__name__)
+
 MIN_WEBHOOK_TOKEN_LENGTH = 16
+GITOPS_BACKENDS = ("gitlab", "internal", "fake")
 
 
 class Settings(BaseSettings):
     """Environment variables. Secrets are SecretStr so they never show up in repr/logs."""
 
-    model_config = SettingsConfigDict(env_file=None, extra="ignore")
+    # populate_by_name: code and tests may use the field names; env vars use the aliases.
+    model_config = SettingsConfigDict(env_file=None, extra="ignore", populate_by_name=True)
 
     webhook_token: SecretStr
     config_path: Path = Path("/etc/vm-autoscaler/config.yaml")
     log_level: str = "INFO"
-    http_timeout_seconds: float = 10.0
 
-    gitops_backend: Literal["internal", "gitlab", "fake"] = "internal"
+    # Required: no default, so a missing ConfigMap value stops the pod at startup instead of
+    # silently running the unfinished internal backend.
+    gitops_backend: Literal["gitlab", "internal", "fake"]
     gitops_api_url: str | None = None
     gitops_api_token: SecretStr | None = None
     gitops_api_timeout_seconds: float = 10.0
@@ -66,12 +73,21 @@ class Settings(BaseSettings):
     gitops_fake_seed_path: Path | None = None
 
     # GITOPS_BACKEND=gitlab: edit the Argo CD source repo through the GitLab REST API.
-    # Timeout and retries reuse GITOPS_API_TIMEOUT_SECONDS / GITOPS_API_MAX_RETRIES.
     gitlab_url: str | None = None
     gitlab_token: SecretStr | None = None
+    # Unset: fall back to GITOPS_API_TIMEOUT_SECONDS / GITOPS_API_MAX_RETRIES (old names).
+    gitlab_timeout_seconds: float | None = None
+    gitlab_max_retries: int | None = Field(default=None, ge=0, le=10)
 
     argocd_url: str | None = None
     argocd_token: SecretStr | None = None
+    # HTTP_TIMEOUT_SECONDS is the old name.
+    argocd_timeout_seconds: float = Field(
+        default=10.0,
+        validation_alias=AliasChoices(
+            "argocd_timeout_seconds", "ARGOCD_TIMEOUT_SECONDS", "HTTP_TIMEOUT_SECONDS"
+        ),
+    )
     argocd_sync_method: Literal["api", "cli", "fake"] = "api"
     argocd_insecure_skip_verify: bool = False
     argocd_cli_path: str = "argocd"
@@ -79,6 +95,16 @@ class Settings(BaseSettings):
     ca_bundle_path: Path | None = None
 
     readiness_check_dependencies: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_backend(cls, data: Any) -> Any:
+        """Name the allowed values when GITOPS_BACKEND is missing (pydantic's message is terse)."""
+        if isinstance(data, dict) and not data.get("gitops_backend"):
+            raise ValueError(
+                "GITOPS_BACKEND is required; set it to one of: " + " | ".join(GITOPS_BACKENDS)
+            )
+        return data
 
     @field_validator("webhook_token")
     @classmethod
@@ -100,6 +126,20 @@ class Settings(BaseSettings):
         if self.argocd_sync_method in ("api", "cli") and not self.argocd_url:
             raise ValueError("ARGOCD_URL is required when ARGOCD_SYNC_METHOD is api or cli")
         return self
+
+    @property
+    def gitlab_timeout(self) -> float:
+        """GitLab request timeout: GITLAB_TIMEOUT_SECONDS, else GITOPS_API_TIMEOUT_SECONDS."""
+        if self.gitlab_timeout_seconds is not None:
+            return self.gitlab_timeout_seconds
+        return self.gitops_api_timeout_seconds
+
+    @property
+    def gitlab_retries(self) -> int:
+        """GitLab read retries: GITLAB_MAX_RETRIES, else GITOPS_API_MAX_RETRIES."""
+        if self.gitlab_max_retries is not None:
+            return self.gitlab_max_retries
+        return self.gitops_api_max_retries
 
 
 # --------------------------------------------------------------------------------------
@@ -197,7 +237,8 @@ class GitLabConfig(BaseModel):
 
     author_name: str = "vm-autoscaler"
     author_email: str = "vm-autoscaler@example.local"
-    # Alias for change_reason_prefix; when set it wins (one prefix, never two).
+    # Deprecated: use the top-level change_reason_prefix. Still accepted when
+    # change_reason_prefix is not set; a different value for both is a config error.
     commit_message_prefix: str | None = None
     # Where the "last scaled" time for cooldowns comes from:
     #   commits     - the newest matching vm-autoscaler commit on the branch (nothing is
@@ -261,12 +302,27 @@ class AppConfig(BaseModel):
         duplicates = {str(key) for key in keys if keys.count(key) > 1}
         if duplicates:
             raise ValueError(f"duplicate targets: {sorted(duplicates)}")
-        if self.gitlab.commit_message_prefix is not None:
-            self.change_reason_prefix = self.gitlab.commit_message_prefix
+        self._resolve_prefix()
         # Resolving every target validates all overrides at startup (fail fast).
         for target in self.targets:
             self.resolve_target(target)
         return self
+
+    def _resolve_prefix(self) -> None:
+        """One prefix: the commit title drives cooldown matching, so two values are an error."""
+        legacy = self.gitlab.commit_message_prefix
+        if legacy is None:
+            return
+        explicit = "change_reason_prefix" in self.model_fields_set
+        if explicit and legacy != self.change_reason_prefix:
+            raise ValueError(
+                f"gitlab.commit_message_prefix {legacy!r} differs from change_reason_prefix "
+                f"{self.change_reason_prefix!r}; remove gitlab.commit_message_prefix"
+            )
+        logger.warning(
+            "gitlab.commit_message_prefix is deprecated; use change_reason_prefix instead"
+        )
+        self.change_reason_prefix = legacy
 
     def resolve_target(self, target: TargetConfig) -> Target:
         """Merge global policies with target overrides into an effective `Target`."""

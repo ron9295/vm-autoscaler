@@ -2,6 +2,7 @@ import json
 import logging
 
 import httpx
+import pytest
 
 from app.observability import JsonFormatter, redact, request_id_var
 from app.readiness import ReadinessChecker
@@ -55,3 +56,9 @@ async def test_readiness_checks_urls_and_caches() -> None:
     assert await checker.check() == {"config": True, "gitops_api": True, "argocd": False}
     await checker.check()
     assert len(calls) == 2  # second call served from cache
+
+
+def test_readiness_cache_fields_are_not_constructor_arguments() -> None:
+    with pytest.raises(TypeError):
+        ReadinessChecker(_cached={})  # type: ignore[call-arg]
+    assert "_cached" not in repr(ReadinessChecker())

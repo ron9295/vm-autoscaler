@@ -20,10 +20,13 @@ service config. An alert for a cluster/namespace that is not configured is skipp
 `unknown_target`.
 
 The **value** must be a percentage (0–100) in the query with refId **`B`** (configurable with
-`defaults.value_ref_id`). If `B` is missing, the service uses the first numeric value.
+`defaults.value_ref_id`). The service reads **only** that refId: if it is missing or not a
+number, the alert is skipped with `value_missing` and a WARNING lists the refIds it did get.
+There is no fallback to another query, so check the refId before going past `dry_run`.
 
-A firing alert without `ocp_cluster`, `namespace`, `component` or `resource` is rejected
-with HTTP 422 and a message that says which label is missing. A firing alert with a
+A firing alert without `ocp_cluster`, `namespace`, `component` or `resource` is ignored on
+its own (`missing_label`, logged as a WARNING that names the label and counted in
+`vm_autoscaler_alerts_ignored_total`); the other alerts in the webhook are still handled. A firing alert with a
 `resource` other than `storage` is ignored (`unsupported_resource`, logged as a WARNING and
 counted in `vm_autoscaler_alerts_ignored_total`) and the rest of the webhook is still
 handled. Resolved alerts are ignored.

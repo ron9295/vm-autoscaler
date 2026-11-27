@@ -97,6 +97,27 @@ def test_other_backends_do_not_need_gitlab_settings(app_config: AppConfig) -> No
     check_backend_requirements(fake, config)
 
 
-def test_commit_message_prefix_overrides_reason_prefix(app_config: AppConfig) -> None:
-    config = _config(app_config, {"project": "g/r", "commit_message_prefix": "[bot]"})
+def test_commit_message_prefix_alone_is_used_with_a_deprecation_warning(
+    app_config: AppConfig, caplog: pytest.LogCaptureFixture
+) -> None:
+    raw = app_config.model_dump(mode="json", exclude_unset=True)
+    raw.pop("change_reason_prefix", None)
+    raw["gitlab"] = {"project": "g/r", "commit_message_prefix": "[bot]"}
+    config = AppConfig.model_validate(raw)
     assert config.change_reason_prefix == "[bot]"
+    assert "commit_message_prefix is deprecated" in caplog.text
+
+
+def test_conflicting_prefixes_are_rejected(app_config: AppConfig) -> None:
+    raw = app_config.model_dump(mode="json")
+    raw["change_reason_prefix"] = "[one]"
+    raw["gitlab"] = {"project": "g/r", "commit_message_prefix": "[two]"}
+    with pytest.raises(ValueError, match="differs from change_reason_prefix"):
+        AppConfig.model_validate(raw)
+
+
+def test_same_prefix_in_both_places_is_accepted(app_config: AppConfig) -> None:
+    raw = app_config.model_dump(mode="json")
+    raw["change_reason_prefix"] = "[same]"
+    raw["gitlab"] = {"project": "g/r", "commit_message_prefix": "[same]"}
+    assert AppConfig.model_validate(raw).change_reason_prefix == "[same]"

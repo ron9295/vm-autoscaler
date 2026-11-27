@@ -26,11 +26,10 @@ from ruamel.yaml.error import YAMLError
 from ruamel.yaml.scalarstring import DoubleQuotedScalarString, SingleQuotedScalarString
 
 from app.domain.errors import GitOpsManifestError
-from app.domain.quantity import QuantityError, parse_bytes
+from app.domain.quantity import BINARY_SUFFIXES, QuantityError, parse_bytes
 
 _SEQUENCE_ITEM_RE = re.compile(r"^(\s*)- ")
 _KEY_LINE_RE = re.compile(r"^(\s*)[^\s#-][^:#]*:\s*(#.*)?$")
-_BINARY_UNITS = {"Ki": 1024, "Mi": 1024**2, "Gi": 1024**3, "Ti": 1024**4, "Pi": 1024**5}
 
 
 # --------------------------------------------------------------------------------------
@@ -236,7 +235,7 @@ def _match_byte_unit(old_text: str, new_text: str) -> str:
         return new_text
     if old_text.isdigit():
         return str(new_bytes)
-    for suffix, multiplier in _BINARY_UNITS.items():
+    for suffix, multiplier in BINARY_SUFFIXES.items():
         if old_text.endswith(suffix) and new_bytes % multiplier == 0:
             return f"{new_bytes // multiplier}{suffix}"
     return new_text

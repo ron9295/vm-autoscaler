@@ -5,7 +5,6 @@ from app.api.grafana_webhook import (
     extract_value,
     parse_webhook,
 )
-from app.domain.errors import AlertParseError
 from app.domain.models import TargetKey
 from app.services.scaling_service import group_by_target
 from tests.conftest import load_fixture
@@ -34,9 +33,23 @@ def test_resolved_alert_is_ignored() -> None:
     assert [i.reason for i in parsed.ignored] == ["resolved"]
 
 
-def test_missing_label_raises_clear_error() -> None:
-    with pytest.raises(AlertParseError, match="missing required label 'ocp_cluster'"):
-        _parse("grafana_missing_label.json")
+def test_missing_label_is_ignored_not_rejected(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING"):
+        parsed = _parse("grafana_missing_label.json")
+    assert parsed.requests == []
+    [ignored] = parsed.ignored
+    assert (ignored.fingerprint, ignored.reason) == ("a1b2c3d4e5f60002", "missing_label")
+    assert "ocp_cluster" in str(getattr(caplog.records[-1], "fields", {}))
+
+
+def test_malformed_alert_does_not_block_the_valid_one() -> None:
+    payload = load_fixture("grafana_firing_storage.json")
+    broken = {**payload["alerts"][0], "fingerprint": "broken"}
+    broken["labels"] = {k: v for k, v in broken["labels"].items() if k != "component"}
+    payload["alerts"].insert(0, broken)
+    parsed = parse_webhook(GrafanaWebhook.model_validate(payload), value_ref_id="B")
+    assert [r.fingerprint for r in parsed.requests] == ["a1b2c3d4e5f60001"]
+    assert [(i.fingerprint, i.reason) for i in parsed.ignored] == [("broken", "missing_label")]
 
 
 def test_autoscale_not_true_is_flagged() -> None:
@@ -66,12 +79,13 @@ def test_mixed_batch_keeps_the_storage_alert() -> None:
     ]
 
 
-def test_missing_label_still_rejected_even_for_unsupported_resource() -> None:
+def test_missing_label_wins_over_unsupported_resource() -> None:
     payload = load_fixture("grafana_firing_storage.json")
     payload["alerts"][0]["labels"]["resource"] = "cpu"
     del payload["alerts"][0]["labels"]["namespace"]
-    with pytest.raises(AlertParseError, match="missing required label 'namespace'"):
-        parse_webhook(GrafanaWebhook.model_validate(payload), value_ref_id="B")
+    parsed = parse_webhook(GrafanaWebhook.model_validate(payload), value_ref_id="B")
+    assert parsed.requests == []
+    assert [i.reason for i in parsed.ignored] == ["missing_label"]
 
 
 def test_multiple_alerts_grouped_by_target() -> None:
@@ -86,11 +100,30 @@ def test_multiple_alerts_grouped_by_target() -> None:
     assert [r.value for r in groups[region_a]] == [85.0]
 
 
-def test_extract_value_prefers_ref_id_then_first_number() -> None:
+def test_extract_value_uses_only_the_configured_ref_id() -> None:
     assert extract_value({"A": 1.0, "B": 2.0}, "B") == 2.0
-    assert extract_value({"A": 1.0, "C": None}, "B") == 1.0
+    assert extract_value({"B": 7}, "B") == 7.0
+    assert extract_value({"A": 1.0, "C": None}, "B") is None
     assert extract_value({"B": None}, "B") is None
+    assert extract_value({"B": True}, "B") is None
+    assert extract_value({"B": "85"}, "B") is None
     assert extract_value(None, "B") is None
+    assert extract_value({}, "B") is None
+
+
+def test_extract_value_warns_when_ref_id_absent(caplog: pytest.LogCaptureFixture) -> None:
+    with caplog.at_level("WARNING"):
+        assert extract_value({"A": 1.0, "C": 2.0}, "B") is None
+    fields = getattr(caplog.records[-1], "fields", {})
+    assert fields["ref_id"] == "B"
+    assert fields["available"] == ["A", "C"]
+
+
+def test_missing_ref_id_value_means_value_missing_request() -> None:
+    payload = load_fixture("grafana_firing_storage.json")
+    payload["alerts"][0]["values"] = {"A": 85.0}
+    [request] = parse_webhook(GrafanaWebhook.model_validate(payload), "B").requests
+    assert request.value is None
 
 
 def test_extra_fields_are_allowed() -> None:
